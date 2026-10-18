@@ -202,15 +202,36 @@ func detectFramework(root, lang string) string {
     }
   }
   if lang=="Python" {
-    for _,f:=range []string{"requirements.txt","pyproject.toml"}{
-      data,e:=os.ReadFile(filepath.Join(root,f));if e!=nil{continue};s:=strings.ToLower(string(data))
-      if strings.Contains(s,"fastapi"){return "FastAPI"};if strings.Contains(s,"django"){return "Django"};if strings.Contains(s,"flask"){return "Flask"}
+    if _, e := os.Stat(filepath.Join(root, ".flaskenv")); e == nil {
+      return "Flask"
+    }
+    candidates := []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "setup.cfg"}
+    reqDir := filepath.Join(root, "requirements")
+    if entries, err := os.ReadDir(reqDir); err == nil {
+      for _, e := range entries {
+        if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+          candidates = append(candidates, filepath.Join("requirements", e.Name()))
+        }
+      }
+    }
+    for _, f := range candidates {
+      data, e := os.ReadFile(filepath.Join(root, f)); if e != nil { continue }
+      s := strings.ToLower(string(data))
+      if strings.Contains(s, "fastapi") { return "FastAPI" }
+      if strings.Contains(s, "django") { return "Django" }
+      if strings.Contains(s, "flask") { return "Flask" }
     }
   }
   return ""
 }
-func frameworkPath(root,lang string) string {
-  if lang=="Node"{return "package.json"};if _,e:=os.Stat(filepath.Join(root,"requirements.txt"));e==nil{return "requirements.txt"};return "pyproject.toml"
+func frameworkPath(root, lang string) string {
+  if lang == "Node" { return "package.json" }
+  for _, f := range []string{".flaskenv", "requirements.txt", "pyproject.toml", "Pipfile", "setup.py"} {
+    if _, e := os.Stat(filepath.Join(root, f)); e == nil {
+      return f
+    }
+  }
+  return "pyproject.toml"
 }
 func confidence(ev []Evidence, hasRun bool) float64 {
   if len(ev)==0{return 0.20};var sum float64;for _,e:=range ev{sum+=e.Strength};c:=sum/float64(len(ev));if hasRun{c+=0.10};if c>0.99{c=0.99};return c

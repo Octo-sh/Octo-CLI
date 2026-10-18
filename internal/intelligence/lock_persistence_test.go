@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -104,6 +105,13 @@ func setupTestProject(t *testing.T) (string, ProjectModel, ExecutionPlan) {
 	if err := os.WriteFile(filepath.Join(root, "index.js"), []byte("console.log('hi');"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	model := ProjectModel{
 		Name:       "web-app",
 		Root:       root,
@@ -112,6 +120,7 @@ func setupTestProject(t *testing.T) (string, ProjectModel, ExecutionPlan) {
 	plan := ExecutionPlan{
 		ProjectName: "web-app",
 		Root:        root,
+		Ports:       []PortAssignment{{Component: "web", Requested: port, Resolved: port}},
 		Steps: []ExecutionStep{{
 			ID:                "component.web.start",
 			Component:         "web",
@@ -686,6 +695,13 @@ done
 		t.Fatal(err)
 	}
 
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	candidate := ExecutionCandidate{ID: "sh.start", Command: "/bin/sh " + scriptPath, Confidence: 0.95}
 	component := Component{
 		Name:                "service",
@@ -701,6 +717,7 @@ done
 	plan := ExecutionPlan{
 		ProjectName: "sigint-demo",
 		Root:        root,
+		Ports:       []PortAssignment{{Component: "service", Requested: port, Resolved: port}},
 		Steps: []ExecutionStep{{
 			ID:                "component.service.start",
 			Component:         "service",

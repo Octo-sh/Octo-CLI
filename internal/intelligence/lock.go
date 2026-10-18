@@ -168,6 +168,26 @@ func RecordVerifiedStrategiesWithLock(root string, model ProjectModel, plan Exec
 	lock.Spec = OctoLockSpec
 	lock.Project = model.Name
 
+	unconfirmed := make(map[string]bool)
+	for _, proc := range report.ActiveProcesses {
+		if !proc.Verified {
+			comp := proc.Component
+			if comp == "" {
+				comp = proc.StepID
+			}
+			unconfirmed[comp] = true
+		}
+	}
+	for _, stepRes := range report.Steps {
+		if stepRes.Status == StepStartedNotConfirmed {
+			for _, ps := range plan.Steps {
+				if ps.ID == stepRes.ID && ps.Component != "" {
+					unconfirmed[ps.Component] = true
+				}
+			}
+		}
+	}
+
 	byStep := make(map[string]ExecutionStepResult)
 	for _, result := range report.Steps {
 		if result.Status == StepSucceeded && result.CandidateID != "" {
@@ -175,7 +195,11 @@ func RecordVerifiedStrategiesWithLock(root string, model ProjectModel, plan Exec
 		}
 	}
 
+	recordedCount := 0
 	for _, step := range plan.Steps {
+		if unconfirmed[step.Component] {
+			continue
+		}
 		result, ok := byStep[step.ID]
 		if !ok {
 			continue
@@ -225,6 +249,13 @@ func RecordVerifiedStrategiesWithLock(root string, model ProjectModel, plan Exec
 		if !replaced {
 			lock.Strategies = append(lock.Strategies, entry)
 		}
+		recordedCount++
+	}
+	if recordedCount == 0 && !report.VerifiedStartup {
+		return lock, nil
+	}
+	if len(lock.Strategies) == 0 {
+		return lock, nil
 	}
 	sort.Slice(lock.Strategies, func(i, j int) bool {
 		return lock.Strategies[i].Component < lock.Strategies[j].Component

@@ -51,6 +51,8 @@ func NewProjectDetectorRegistry() *ProjectDetectorRegistry {
 			{File: "go.mod", Language: "Go", Detect: detectGoProject},
 			{File: "pyproject.toml", Language: "Python", Detect: detectPythonProject},
 			{File: "requirements.txt", Language: "Python", Detect: detectPythonProject},
+			{File: "setup.py", Language: "Python", Detect: detectPythonProject},
+			{File: "Pipfile", Language: "Python", Detect: detectPythonProject},
 			{File: "Cargo.toml", Language: "Rust", Detect: detectRustProject},
 			{File: "pom.xml", Language: "Java", Detect: detectJavaProject},
 			{File: "build.gradle", Language: "Java", Detect: detectJavaProject},
@@ -148,7 +150,7 @@ func isStubPackageJSON(root string) bool {
 		Workspaces interface{}       `json:"workspaces"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil { return false }
-	return pkg.Name == "" && pkg.Main == "" && len(pkg.Scripts) == 0 && pkg.Workspaces == nil
+	return (pkg.Name == "" || (len(pkg.Scripts) == 0 && pkg.Main == "")) && pkg.Workspaces == nil
 }
 
 func hasOtherProjectSignals(root string) bool {
@@ -466,7 +468,26 @@ func detectPythonPackageManager(root string) string {
 	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
 		return "pip"
 	}
+	if reqDir := filepath.Join(root, "requirements"); hasTxtFiles(reqDir) {
+		return "pip"
+	}
+	if _, err := os.Stat(filepath.Join(root, "setup.py")); err == nil {
+		return "pip"
+	}
 	return ""
+}
+
+func hasTxtFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+			return true
+		}
+	}
+	return false
 }
 func detectJavaProject(root string) (DetectedProject, error) { return DetectedProject{Name: filepath.Base(root)}, nil }
 func detectRubyProject(root string) (DetectedProject, error) { return DetectedProject{Name: filepath.Base(root)}, nil }
@@ -530,6 +551,26 @@ func detectSimpleProject(root string) (DetectedProject, error) {
 	for _, entry := range entries {
 		if !entry.IsDir() && (strings.HasSuffix(entry.Name(), ".html") || strings.HasSuffix(entry.Name(), ".htm")) {
 			project := DetectedProject{Name: filepath.Base(root), Language: "HTML"}
+			project.IsMonorepo, project.MonorepoRoot = detectMonorepo(root)
+			return project, nil
+		}
+	}
+	if hasRequirementsSubfolder(root) {
+		project := DetectedProject{
+			Name:           filepath.Base(root),
+			Language:       "Python",
+			PackageManager: detectPythonPackageManager(root),
+		}
+		project.IsMonorepo, project.MonorepoRoot = detectMonorepo(root)
+		return project, nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".py") {
+			project := DetectedProject{
+				Name:           filepath.Base(root),
+				Language:       "Python",
+				PackageManager: detectPythonPackageManager(root),
+			}
 			project.IsMonorepo, project.MonorepoRoot = detectMonorepo(root)
 			return project, nil
 		}

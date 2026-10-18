@@ -391,6 +391,15 @@ func (p *shellProcess) Pid() int {
 	return p.cmd.Process.Pid
 }
 
+func (p *shellProcess) LogPath() string {
+	return p.logPath
+}
+
+// LogAwareProcess is an optional interface implemented by processes that write to a log file.
+type LogAwareProcess interface {
+	LogPath() string
+}
+
 // ComposeAdapter executes Docker Compose service steps.
 type ComposeAdapter struct{}
 

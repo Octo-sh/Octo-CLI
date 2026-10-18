@@ -222,3 +222,84 @@ core = { path = "../core" }
 		t.Fatalf("expected run command 'cargo run -p cli', got %q", cli.RunCommand)
 	}
 }
+
+func TestDiscoveryPythonSetupPy(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "setup.py"), []byte("from setuptools import setup\nsetup(name='myapp')\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "app.py"), []byte("print('hello')\n"), 0o644)
+
+	model, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Components) != 1 {
+		t.Fatalf("expected 1 component, got %d", len(model.Components))
+	}
+	if model.Components[0].Language != "Python" {
+		t.Fatalf("expected Python language, got %s", model.Components[0].Language)
+	}
+}
+
+func TestDiscoveryPythonPipfile(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "Pipfile"), []byte("[packages]\nflask = \"*\"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "autoapp.py"), []byte("print('app')\n"), 0o644)
+
+	model, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Components) != 1 {
+		t.Fatalf("expected 1 component, got %d", len(model.Components))
+	}
+	if model.Components[0].Language != "Python" {
+		t.Fatalf("expected Python language, got %s", model.Components[0].Language)
+	}
+	if model.Components[0].PackageManager != "pipenv" {
+		t.Fatalf("expected pipenv package manager, got %s", model.Components[0].PackageManager)
+	}
+}
+
+func TestDiscoveryPythonRequirementsSubfolder(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "requirements", "prod.txt"), []byte("flask==2.0.0\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "run.py"), []byte("print('run')\n"), 0o644)
+
+	model, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Components) != 1 {
+		t.Fatalf("expected 1 component, got %d", len(model.Components))
+	}
+	if model.Components[0].Language != "Python" {
+		t.Fatalf("expected Python language, got %s", model.Components[0].Language)
+	}
+}
+
+func TestDiscoveryNodeRedRootAppWithTestSubdir(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "package.json"), []byte(`{
+		"name": "node-red",
+		"version": "1.0.0",
+		"scripts": {
+			"start": "node red.js"
+		}
+	}`), 0o644)
+	_ = os.MkdirAll(filepath.Join(root, "test", "resources"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "test", "resources", "package.json"), []byte(`{"name":"test-fixture"}`), 0o644)
+
+	model, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootComp := findComponent(model.Components, "node-red")
+	if rootComp == nil {
+		t.Fatal("expected root component 'node-red' to be discovered and retained")
+	}
+	if rootComp.Path != "." {
+		t.Fatalf("expected rootComp path '.', got %q", rootComp.Path)
+	}
+}
+

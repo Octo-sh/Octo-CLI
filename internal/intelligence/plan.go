@@ -70,7 +70,7 @@ func (d DeterministicPlanner) Plan(ctx context.Context, model ProjectModel) (Exe
 		return ExecutionPlan{}, newFailure(FailureInvalidProject, "", "Octo cannot build an execution plan for this repository.", "The project has no detected name.")
 	}
 	if len(model.Components) == 0 && len(model.Services) == 0 {
-		return ExecutionPlan{}, newFailure(FailureInvalidProject, "", "Octo cannot build an execution plan for this repository.", "No runnable components or services were discovered.")
+		return ExecutionPlan{}, newFailure(FailureInvalidProject, "", "Octo cannot build an execution plan for this repository.", "No runnable components or services were discovered. Looked for project manifests (package.json, go.mod, Cargo.toml, pyproject.toml, requirements.txt, setup.py, Pipfile) and application entry points (main.py, app.py, wsgi.py, main.go, index.js, server.js).")
 	}
 
 	topology, err := BuildTopologyGraph(model)
@@ -369,6 +369,8 @@ func installCommand(packageManager string) string {
 			return `if not exist .venv if not exist venv (python -m venv .venv) && if exist venv\Scripts\python.exe (venv\Scripts\python.exe -m pip install -r requirements.txt) else (.venv\Scripts\python.exe -m pip install -r requirements.txt)`
 		}
 		return `if [ ! -d ".venv" ] && [ ! -d "venv" ]; then (python3 -m venv .venv || python -m venv .venv || { echo "Python virtualenv module (venv) is missing. On Debian/Ubuntu, install python3-venv: sudo apt install python3-venv" >&2; exit 1; }); fi && if [ -d "venv" ] && [ ! -d ".venv" ]; then venv/bin/python -m pip install -r requirements.txt; else .venv/bin/python -m pip install -r requirements.txt; fi`
+	case "pipenv":
+		return "pipenv install"
 	case "uv":
 		return "uv sync"
 	case "poetry":

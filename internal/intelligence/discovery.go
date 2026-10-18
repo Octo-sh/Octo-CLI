@@ -255,9 +255,40 @@ func scanFallbackComponents(root string, declaredPaths map[string]struct{}) ([]C
 	return scanned, evidence, diagnostics, err
 }
 
+func hasRequirementsSubfolder(dir string) bool {
+	reqDir := filepath.Join(dir, "requirements")
+	entries, err := os.ReadDir(reqDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+			return true
+		}
+	}
+	return false
+}
+
+func findRequirementsManifest(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "requirements.txt")); err == nil {
+		return "requirements.txt"
+	}
+	reqDir := filepath.Join(dir, "requirements")
+	entries, err := os.ReadDir(reqDir)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+				return filepath.ToSlash(filepath.Join("requirements", e.Name()))
+			}
+		}
+	}
+	return ""
+}
+
 func hasRootProjectManifest(root string) bool {
 	for _, f := range []string{
 		"package.json", "go.mod", "Cargo.toml", "pyproject.toml", "requirements.txt",
+		"setup.py", "Pipfile",
 		"pom.xml", "build.gradle", "build.gradle.kts", "composer.json", "mix.exs",
 		"Gemfile", "Package.swift", ".octo.yaml",
 	} {
@@ -267,6 +298,9 @@ func hasRootProjectManifest(root string) bool {
 			}
 			return true
 		}
+	}
+	if hasRequirementsSubfolder(root) {
+		return true
 	}
 	return false
 }
@@ -402,8 +436,8 @@ func recognizeComponent(root, rel, dir string, rootHasManifest bool) (Component,
 		}, ev, true, nil
 	}
 
-	// 4. Python: pyproject.toml, requirements.txt, Pipfile
-	for _, f := range []string{"pyproject.toml", "requirements.txt", "Pipfile"} {
+	// 4. Python: pyproject.toml, requirements.txt, Pipfile, setup.py, requirements/*.txt
+	for _, f := range []string{"pyproject.toml", "requirements.txt", "Pipfile", "setup.py"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
 			info, _ := detectPythonProject(dir)
 			name := info.Name
@@ -425,6 +459,59 @@ func recognizeComponent(root, rel, dir string, rootHasManifest bool) (Component,
 				PackageManager: info.PackageManager,
 				Evidence:       ev,
 			}, ev, true, nil
+		}
+	}
+	if reqRel := findRequirementsManifest(dir); reqRel != "" {
+		info, _ := detectPythonProject(dir)
+		name := info.Name
+		if name == "" {
+			name = filepath.Base(dir)
+		}
+		framework := detectFramework(dir, "Python")
+		ev := []Evidence{{
+			Kind:     EvidenceSignalFile,
+			Path:     filepath.ToSlash(filepath.Join(rel, reqRel)),
+			Detail:   fmt.Sprintf("Component contains a Python requirements manifest (%s).", reqRel),
+			Strength: 0.90,
+		}}
+		return Component{
+			Name:           name,
+			Path:           rel,
+			Language:       "Python",
+			Framework:      framework,
+			PackageManager: info.PackageManager,
+			Evidence:       ev,
+		}, ev, true, nil
+	}
+	// Python entry files when in a non-auxiliary subfolder in standalone layout (root has no manifest)
+	if !rootHasManifest && !isSourceOrAuxiliaryDir(filepath.Base(dir)) && strings.Count(rel, "/") <= 1 {
+		pythonEntryCandidates := []string{"main.py", "app.py", "manage.py", "wsgi.py", "autoapp.py", "run.py", "server.py"}
+		if dirBase := filepath.Base(dir); dirBase != "" && dirBase != "." {
+			pythonEntryCandidates = append(pythonEntryCandidates, dirBase+".py")
+		}
+		for _, f := range pythonEntryCandidates {
+			if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+				framework := detectFramework(dir, "Python")
+				ev := []Evidence{{
+					Kind:     EvidenceConfig,
+					Path:     filepath.ToSlash(filepath.Join(rel, f)),
+					Detail:   fmt.Sprintf("Component contains Python entry file %s.", f),
+					Strength: 0.85,
+				}}
+				pm := detectPythonPackageManager(dir)
+				if pm == "" {
+					pm = "pip"
+				}
+				return Component{
+					Name:           filepath.Base(dir),
+					Path:           rel,
+					Language:       "Python",
+					Framework:      framework,
+					PackageManager: pm,
+					RunCommand:     "python " + f,
+					Evidence:       ev,
+				}, ev, true, nil
+			}
 		}
 	}
 
@@ -628,9 +715,10 @@ func isRealRunnableRootApp(root string, rootInfo DetectedProject, childComponent
 					}
 					hasIndependentScript = true
 				}
-				if !hasIndependentScript {
-					return hasIndependentRootEntryPoint(root)
+				if hasIndependentScript {
+					return true
 				}
+				return hasIndependentRootEntryPoint(root)
 			}
 		}
 	}
@@ -654,11 +742,19 @@ func isOrchestrationCommand(cmd string) bool {
 }
 
 func hasIndependentRootEntryPoint(root string) bool {
-	if _, err := os.Stat(filepath.Join(root, "main.go")); err == nil {
+	if hasGoMainPackage(root) {
 		return true
 	}
-	for _, f := range []string{"main.py", "app.py", "manage.py", "wsgi.py"} {
+	for _, f := range []string{"main.py", "app.py", "manage.py", "wsgi.py", "autoapp.py", "run.py", "server.py"} {
 		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
+			return true
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, ".flaskenv")); err == nil {
+		return true
+	}
+	if base := filepath.Base(root); base != "" && base != "." {
+		if _, err := os.Stat(filepath.Join(root, base+".py")); err == nil {
 			return true
 		}
 	}
@@ -668,6 +764,58 @@ func hasIndependentRootEntryPoint(root string) bool {
 	for _, f := range []string{"server.js", "server.ts", "src/server.js", "src/server.ts", "src/index.js", "src/index.ts", "index.js", "index.ts", "app.js", "app.ts"} {
 		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
 			return true
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "index.html")); err == nil {
+		return true
+	}
+	return false
+}
+
+func hasGoMainPackage(root string) bool {
+	if _, err := os.Stat(filepath.Join(root, "main.go")); err == nil {
+		return true
+	}
+	// Check for any .go file with "package main" in root (e.g. app.go in Gotify)
+	entries, err := os.ReadDir(root)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") && !strings.HasSuffix(e.Name(), "_test.go") {
+				data, err := os.ReadFile(filepath.Join(root, e.Name()))
+				if err == nil {
+					text := string(data)
+					if strings.HasPrefix(strings.TrimSpace(text), "package main") || strings.Contains(text, "\npackage main") {
+						return true
+					}
+				}
+			}
+		}
+	}
+	// Check for cmd/ directory entry points (e.g. cmd/gogs/main.go)
+	cmdDir := filepath.Join(root, "cmd")
+	if cmdEntries, err := os.ReadDir(cmdDir); err == nil {
+		for _, e := range cmdEntries {
+			if e.IsDir() {
+				sub := filepath.Join(cmdDir, e.Name())
+				if _, err := os.Stat(filepath.Join(sub, "main.go")); err == nil {
+					return true
+				}
+				if subEntries, err := os.ReadDir(sub); err == nil {
+					for _, se := range subEntries {
+						if !se.IsDir() && strings.HasSuffix(se.Name(), ".go") && !strings.HasSuffix(se.Name(), "_test.go") {
+							data, err := os.ReadFile(filepath.Join(sub, se.Name()))
+							if err == nil {
+								text := string(data)
+								if strings.HasPrefix(strings.TrimSpace(text), "package main") || strings.Contains(text, "\npackage main") {
+									return true
+								}
+							}
+						}
+					}
+				}
+			} else if strings.HasSuffix(e.Name(), ".go") && !strings.HasSuffix(e.Name(), "_test.go") {
+				return true
+			}
 		}
 	}
 	return false

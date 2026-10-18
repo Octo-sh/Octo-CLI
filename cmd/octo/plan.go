@@ -10,10 +10,11 @@ import (
 )
 
 var planCmd = &cobra.Command{
-	Use:     "plan [path]",
-	Aliases: []string{"p"},
-	Short:   "Show the deterministic execution plan for a repository",
-	Args:    cobra.MaximumNArgs(1),
+	Use:          "plan [path]",
+	Aliases:      []string{"p"},
+	Short:        "Show the deterministic execution plan for a repository",
+	SilenceUsage: true,
+	Args:         cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) == 1 {
@@ -23,6 +24,14 @@ var planCmd = &cobra.Command{
 		model, err := intelligence.Analyze(path)
 		if err != nil {
 			return err
+		}
+
+		runnable := intelligence.RunnableTargets(model)
+		if len(runnable) == 0 && len(model.Services) == 0 {
+			sel, selErr := intelligence.ResolveSelection(model, intelligence.SelectionOptions{})
+			if selErr == nil {
+				model = sel.FilteredModel
+			}
 		}
 
 		plan, err := (intelligence.DeterministicPlanner{}).Plan(cmd.Context(), model)
