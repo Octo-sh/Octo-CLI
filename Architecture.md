@@ -168,10 +168,11 @@ Octo embeds a native JSON-RPC 2.0 MCP server over stdio in pure Go with zero thi
 
 Octo separates core analysis and planning algorithms from ecosystem-specific logic via typed registries:
 
-1. **ProjectDetectorRegistry**: Register language and framework detectors (`RegisterProjectDetector`) and signal definitions (`RegisterProjectSignal`).
-2. **CandidateProviderRegistry**: Register candidate generators (`RegisterCandidateProvider`) turning manifests into bounded `ExecutionCandidate` sets.
-3. **VerificationRegistry**: Register custom health probes (`RegisterVerificationProvider`) for protocol-specific verification.
-4. **RuntimeAdapterRegistry**: Register custom execution backends (`RegisterRuntimeAdapter`).
+1. **EcosystemRegistry**: Declarative registry for programming languages, runtimes, indicator files, default commands, package managers, and frameworks (`RegisterEcosystem`, `RegisterFramework`).
+2. **ProjectDetectorRegistry**: Register language and framework detectors (`RegisterProjectDetector`) and signal definitions (`RegisterProjectSignal`).
+3. **CandidateProviderRegistry**: Register candidate generators (`RegisterCandidateProvider`) turning manifests into bounded `ExecutionCandidate` sets.
+4. **VerificationRegistry**: Register custom health probes (`RegisterVerificationProvider`) for protocol-specific verification.
+5. **RuntimeAdapterRegistry**: Register custom execution backends (`RegisterRuntimeAdapter`).
 
 New languages and ecosystems are added through these isolated interfaces without modifying core graph traversal or planner logic.
 

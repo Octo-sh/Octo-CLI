@@ -63,10 +63,16 @@ func RegisterCandidateProvider(p CandidateProvider) {
 	defaultCandidateProviderRegistry.Register(p)
 }
 
-// Register adds a candidate provider to the registry.
+// Register adds or updates a candidate provider in the registry.
 func (r *CandidateProviderRegistry) Register(p CandidateProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for i, existing := range r.providers {
+		if strings.EqualFold(existing.Name(), p.Name()) {
+			r.providers[i] = p
+			return
+		}
+	}
 	r.providers = append(r.providers, p)
 }
 

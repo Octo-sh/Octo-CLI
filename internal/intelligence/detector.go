@@ -90,10 +90,16 @@ func (r *ProjectDetectorRegistry) RegisterDetector(d ProjectDetector) {
 	r.detectors = append(r.detectors, d)
 }
 
-// RegisterSignal appends a signal definition to the registry.
+// RegisterSignal appends or updates a signal definition in the registry.
 func (r *ProjectDetectorRegistry) RegisterSignal(sig SignalDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for i, existing := range r.signals {
+		if existing.File == sig.File && strings.EqualFold(existing.Language, sig.Language) {
+			r.signals[i] = sig
+			return
+		}
+	}
 	r.signals = append(r.signals, sig)
 }
 

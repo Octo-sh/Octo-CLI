@@ -299,6 +299,13 @@ func hasRootProjectManifest(root string) bool {
 			return true
 		}
 	}
+	for _, eco := range DefaultEcosystemRegistry().Ecosystems() {
+		for _, f := range eco.Files {
+			if _, err := os.Stat(filepath.Join(root, f)); err == nil {
+				return true
+			}
+		}
+	}
 	if hasRequirementsSubfolder(root) {
 		return true
 	}
@@ -639,6 +646,11 @@ func recognizeComponent(root, rel, dir string, rootHasManifest bool) (Component,
 		}
 	}
 
+	// 10b. Registered ecosystem fallback for additional or dynamically registered ecosystems
+	if comp, ev, found := recognizeRegisteredEcosystemComponent(dir, rel); found {
+		return comp, ev, true, nil
+	}
+
 	// 11. Standalone entry points without manifest (supported when root has no manifest)
 	if !rootHasManifest && !isSourceOrAuxiliaryDir(filepath.Base(dir)) && strings.Count(rel, "/") <= 1 {
 		if _, err := os.Stat(filepath.Join(dir, "main.go")); err == nil {
@@ -679,6 +691,80 @@ func recognizeComponent(root, rel, dir string, rootHasManifest bool) (Component,
 	}
 
 	return Component{}, nil, false, nil
+}
+
+func recognizeRegisteredEcosystemComponent(dir, rel string) (Component, []Evidence, bool) {
+	for _, spec := range DefaultEcosystemRegistry().Ecosystems() {
+		for _, f := range spec.Files {
+			if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+				proj, err := spec.DetectProject(dir)
+				if err != nil {
+					continue
+				}
+				name := proj.Name
+				if name == "" {
+					name = filepath.Base(dir)
+				}
+				framework := detectFramework(dir, spec.Name)
+				ev := []Evidence{{
+					Kind:     EvidenceSignalFile,
+					Path:     filepath.ToSlash(filepath.Join(rel, f)),
+					Detail:   fmt.Sprintf("Component contains %s.", f),
+					Strength: 0.90,
+				}}
+				return Component{
+					Name:           name,
+					Path:           rel,
+					Language:       spec.Name,
+					Framework:      framework,
+					PackageManager: proj.PackageManager,
+					RunCommand:     proj.RunCommand,
+					Port:           proj.Port,
+					Evidence:       ev,
+				}, ev, true
+			}
+		}
+		if len(spec.FilePatterns) > 0 {
+			entries, err := os.ReadDir(dir)
+			if err == nil {
+				for _, entry := range entries {
+					if entry.IsDir() {
+						continue
+					}
+					for _, pattern := range spec.FilePatterns {
+						if match, _ := filepath.Match(pattern, entry.Name()); match {
+							proj, err := spec.DetectProject(dir)
+							if err != nil {
+								continue
+							}
+							name := proj.Name
+							if name == "" {
+								name = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+							}
+							framework := detectFramework(dir, spec.Name)
+							ev := []Evidence{{
+								Kind:     EvidenceSignalFile,
+								Path:     filepath.ToSlash(filepath.Join(rel, entry.Name())),
+								Detail:   fmt.Sprintf("Component contains %s.", entry.Name()),
+								Strength: 0.90,
+							}}
+							return Component{
+								Name:           name,
+								Path:           rel,
+								Language:       spec.Name,
+								Framework:      framework,
+								PackageManager: proj.PackageManager,
+								RunCommand:     proj.RunCommand,
+								Port:           proj.Port,
+								Evidence:       ev,
+							}, ev, true
+						}
+					}
+				}
+			}
+		}
+	}
+	return Component{}, nil, false
 }
 
 func isRealRunnableRootApp(root string, rootInfo DetectedProject, childComponents []Component) bool {
