@@ -1,3 +1,7 @@
+// Package intelligence provides static discovery of Docker Compose services.
+// Note: This file only performs static parsing of compose.yaml and docker-compose.yml files
+// into Service definitions and does NOT execute any docker processes or communicate with the Docker daemon.
+// Runtime execution of Compose services is handled exclusively by ComposeAdapter and the runtime layer.
 package intelligence
 
 import (

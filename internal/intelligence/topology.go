@@ -1,3 +1,6 @@
+// Package intelligence builds static topology DAGs for components and services.
+// Note: This file constructs execution dependency edges (DependsOn) and informational
+// network references (NetworkReference). It does not manage or interact with OS processes or runtime state.
 package intelligence
 
 import (

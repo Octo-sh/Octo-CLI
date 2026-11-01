@@ -1,5 +1,7 @@
 package intelligence
 
+import "context"
+
 // EvidenceKind identifies where an inference came from.
 type EvidenceKind string
 
@@ -120,4 +122,72 @@ type ProjectModel struct {
 	Evidence []Evidence `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 	CustomVerification []VerificationCheck `json:"custom_verification,omitempty" yaml:"custom_verification,omitempty"`
 	Diagnostics []string `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
+}
+
+// --- Core Intelligence Pipeline Interfaces ---
+
+// Analyzer performs static discovery and topology analysis on a repository without executing code or spawning OS processes.
+type Analyzer interface {
+	Analyze(path string) (ProjectModel, error)
+}
+
+// Runner executes an ExecutionPlan using runtime adapters, managing process lifecycles and multiplexed logs.
+type Runner interface {
+	Run(ctx context.Context, model ProjectModel, plan ExecutionPlan, env ResolvedEnvironment, opts ExecutionOptions) ExecutionReport
+}
+
+// Verifier deterministically verifies service readiness and health probes (TCP, HTTP, process liveness).
+type Verifier interface {
+	Verify(ctx context.Context, checks []VerificationCheck) ([]VerificationResult, error)
+}
+
+// StaticAnalyzer implements Analyzer using evidence-backed static analysis.
+type StaticAnalyzer struct{}
+
+func (StaticAnalyzer) Analyze(path string) (ProjectModel, error) {
+	return Analyze(path)
+}
+
+// DefaultAnalyzer returns the standard StaticAnalyzer.
+func DefaultAnalyzer() Analyzer {
+	return StaticAnalyzer{}
+}
+
+// DefaultPlanner returns the standard DeterministicPlanner.
+func DefaultPlanner() Planner {
+	return DeterministicPlanner{}
+}
+
+// PlanRunner implements Runner by delegating to runtime adapters and execution resolvers.
+type PlanRunner struct {
+	Resolver RuntimeResolver
+}
+
+func NewPlanRunner(resolver RuntimeResolver) *PlanRunner {
+	return &PlanRunner{Resolver: resolver}
+}
+
+func (r PlanRunner) Run(ctx context.Context, model ProjectModel, plan ExecutionPlan, env ResolvedEnvironment, opts ExecutionOptions) ExecutionReport {
+	resolver := r.Resolver
+	if len(resolver.adapters) == 0 {
+		resolver = NewRuntimeResolver()
+	}
+	return ExecutePlanReportWithOptions(ctx, model, plan, resolver, env, opts)
+}
+
+// DefaultRunner returns the standard PlanRunner.
+func DefaultRunner() Runner {
+	return PlanRunner{Resolver: NewRuntimeResolver()}
+}
+
+// ReadinessVerifier implements Verifier using deterministic protocol checks.
+type ReadinessVerifier struct{}
+
+func (ReadinessVerifier) Verify(ctx context.Context, checks []VerificationCheck) ([]VerificationResult, error) {
+	return Verify(ctx, checks)
+}
+
+// DefaultVerifier returns the standard ReadinessVerifier.
+func DefaultVerifier() Verifier {
+	return ReadinessVerifier{}
 }

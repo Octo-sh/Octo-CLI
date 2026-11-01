@@ -17,30 +17,40 @@ Octo's architectural goal is to **make "how do I run this?" disappear** through 
 
 ---
 
-## 2. Canonical Pipeline
+## 2. Canonical Pipeline & Layer Boundaries
 
-The Octo execution lifecycle follows a single, deterministic pipeline:
+The Octo execution lifecycle follows a single, deterministic pipeline with strict internal separation of concerns:
 
 ```text
-Repository Artifacts
-        ↓
-Evidence Discovery (manifests, lockfiles, source files, compose.yaml)
-        ↓
-ProjectModel (canonical descriptive representation)
-        ↓
-Topology DAG (components, services, depends_on, network_reference)
-        ↓
-Execution Candidates (bounded, confidence-scored options)
-        ↓
-Bounded Decision Layer (deterministic rules, human interactive choice, or external provider)
-        ↓
-ExecutionPlan (topological step-by-step recipe: Setup → Services → Applications)
-        ↓
-Runtime Adapters (native host process or ephemeral container sandbox)
-        ↓
-Readiness Verification (TCP sockets, HTTP probes, process liveness)
-        ↓
-Verified Strategy (.octo.lock state persistence)
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  Layer 1: Static Discovery & Topology (Analyzer interface)                              │
+│                                                                                         │
+│  Repository Artifacts → Evidence Discovery → ProjectModel → Topology DAG               │
+│                                                                                         │
+│  Key Files: model.go, analyze.go, discovery.go, detector.go, ecosystems.go,             │
+│             candidates.go, topology.go, references.go, compose.go, selection.go         │
+│  Boundary Guarantee: 100% static analysis; zero OS process spawning, zero daemon calls │
+└───────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                            │
+                                            ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  Layer 2: Deterministic Planning & Lockfiles (Planner interface)                        │
+│                                                                                         │
+│  Bounded Candidates → Decision Resolution → Phase Compilation → .octo.lock Fingerprint │
+│                                                                                         │
+│  Key Files: plan.go, decision.go, jev.go, lock.go, environment.go, preview.go           │
+│  Boundary Guarantee: Hermetic plan sequencing; zero hallucinated commands               │
+└───────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                            │
+                                            ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  Layer 3: Runtime Execution & Verification (Runner and Verifier interfaces)             │
+│                                                                                         │
+│  Runtime Adapters (Native/Container) → Process Groups → TCP/HTTP Probes → Report       │
+│                                                                                         │
+│  Key Files: runtime.go, runtime_unix/windows.go, container.go, report.go, verify.go    │
+│  Boundary Guarantee: Verified readiness gates before trust; isolated process draining   │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 100% of execution runs through this native intelligence pipeline. Legacy orchestrators, blueprints, and transitional migration flags have been retired.
@@ -49,15 +59,53 @@ Verified Strategy (.octo.lock state persistence)
 
 ## 3. Core Subsystems
 
-### 3.1 Evidence Discovery & ProjectModel
+### 3.1 Layer 1: Static Discovery & Topology (`Analyzer`)
 
-`ProjectModel` is the canonical internal representation of repository facts. Evidence is discovered deterministically:
+The static discovery layer inspects repository artifacts without executing code or communicating with daemons:
 
-- **Manifests & Lockfiles**: `package.json`, `pnpm-lock.yaml`, `go.mod`, `go.work`, `Cargo.toml`, `pyproject.toml`, `poetry.lock`, `Gemfile`, `pom.xml`, `build.gradle`, `mix.exs`, `composer.json`.
-- **Runtimes & Toolchains**: Version constraints evaluated against host tools (Node, Go, Python, Rust, Java, Ruby, PHP, Elixir) and virtual environments (`.venv`, `venv`).
-- **Configuration & Services**: Root Docker Compose definitions (`compose.yaml`, `docker-compose.yml`), custom maintainer overrides (`.octo.yaml`).
+- **Manifests & Signals**: `package.json`, `go.mod`, `go.work`, `Cargo.toml`, `pyproject.toml`, `poetry.lock`, `Gemfile`, `pom.xml`, `build.gradle`, `mix.exs`, `composer.json`, `global.json`, `Package.swift`.
+- **Ecosystem Registry**: Isolated declarative ecosystem definitions ([`EcosystemSpec`](file:///Users/harshul/Projects/Octo-CLI/internal/intelligence/ecosystems.go)) providing indicator files, package managers, port hints, and candidate rules.
+- **Topology DAG**: Multi-target dependency graphs with strict `depends_on` startup ordering and informational `network_reference` communication edges.
+- **Compose Service Discovery**: Purely static YAML parsing of `compose.yaml` / `docker-compose.yml` into declarative `Service` definitions (process lifecycle execution is decoupled to `ComposeAdapter` in Layer 3).
+- **Core Interface**:
+  ```go
+  type Analyzer interface {
+      Analyze(path string) (ProjectModel, error)
+  }
+  ```
 
-The model is descriptive: it records what exists and why, without embedding speculative execution policies.
+### 3.2 Layer 2: Deterministic Planning & Lockfiles (`Planner`)
+
+The planning layer transforms descriptive models and decision choices into a topological recipe:
+
+- **Bounded Candidate Generation**: Scored execution candidates derived strictly from observable artifacts.
+- **Decision Layer**: Offline deterministic resolution, interactive prompts, or typed external providers.
+- **Phase Sequencing**: Step-by-step compilation across `PhaseSetup` → `PhaseProvision` → `PhaseInfrastructure` → `PhaseApplication`.
+- **Strategy Caching (`.octo.lock`)**: SHA-256 fingerprinting of manifests, workspace configs, and source files for instant verified reuse.
+- **Core Interface**:
+  ```go
+  type Planner interface {
+      Plan(ctx context.Context, model ProjectModel) (ExecutionPlan, error)
+  }
+  ```
+
+### 3.3 Layer 3: Runtime Execution & Verification (`Runner`, `Verifier`)
+
+The runtime layer executes plan steps and confirms real machine health:
+
+- **NativeRuntimeAdapter**: Process group isolation (`Setpgid`), graceful drain signals (`SIGTERM`/`SIGKILL`), and multiplexed log streams (`.octo/logs/`).
+- **ContainerAdapter (`--sandbox` / `-s`)**: Ephemeral Docker/Podman isolation with matching base images and port forwarding.
+- **Readiness Verification**: Deterministic TCP socket connectivity tests and HTTP status probes.
+- **Core Interfaces**:
+  ```go
+  type Runner interface {
+      Run(ctx context.Context, model ProjectModel, plan ExecutionPlan, env ResolvedEnvironment, opts ExecutionOptions) ExecutionReport
+  }
+
+  type Verifier interface {
+      Verify(ctx context.Context, checks []VerificationCheck) ([]VerificationResult, error)
+  }
+  ```
 
 ### 3.2 Topology DAG & Target Selection
 
