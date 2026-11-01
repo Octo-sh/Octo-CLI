@@ -96,6 +96,28 @@ func extractExplicitPort(value string) (int, bool) {
 	return 0, false
 }
 
+// ExtractPortFromText parses a port number from runtime logs, verification messages, or error strings.
+func ExtractPortFromText(text string) int {
+	if text == "" {
+		return 0
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:TCP\s+port|port)\s+(\d{2,5})`),
+		regexp.MustCompile(`(?:127\.0\.0\.1|0\.0\.0\.0|localhost|:):(\d{2,5})\b`),
+		regexp.MustCompile(`:(\d{2,5}):\s+bind:\s+address already in use`),
+		regexp.MustCompile(`listen\s+tcp\s+:?(\d{2,5})`),
+	}
+	for _, p := range patterns {
+		matches := p.FindStringSubmatch(text)
+		if len(matches) >= 2 {
+			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
 func discoverNodeScriptPort(root, componentPath, command string) (int, []Evidence, error) {
 	data, err := os.ReadFile(filepath.Join(root, "package.json"))
 	if err != nil {

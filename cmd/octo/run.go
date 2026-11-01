@@ -248,6 +248,10 @@ func runWithIntelligence(cmd *cobra.Command, args []string) error {
 					}
 				}
 			} else {
+				diag := missingErr.FailureDiagnostic()
+				if jsonOutput {
+					return envFailure(jsonOutput, diag, model)
+				}
 				return fmt.Errorf("%w. Pass --skip-env (or -k) to bypass or run 'octo env template' to generate a template", err)
 			}
 		} else {
@@ -622,6 +626,12 @@ func printExecutionReport(report intelligence.ExecutionReport) {
 				fmt.Println(ui.SuccessLine(check.CheckID))
 			} else {
 				fmt.Println(ui.ErrorLine(fmt.Sprintf("%s — %s", check.CheckID, check.Reason)))
+				if check.RootCause != "" {
+					fmt.Printf("    Root Cause: %s\n", check.RootCause)
+				}
+				if check.SuggestedFix != "" {
+					fmt.Printf("    Suggested Fix: %s\n", ui.InfoLine(check.SuggestedFix))
+				}
 			}
 		}
 	}
@@ -646,6 +656,35 @@ func printExecutionReport(report intelligence.ExecutionReport) {
 		}
 	}
 
+	if len(report.Failures) > 0 {
+		fmt.Println()
+		fmt.Println(ui.HeadingStyle.Render("Diagnostics"))
+		for _, failure := range report.Failures {
+			code := string(failure.ErrorCode)
+			if code == "" {
+				code = string(failure.Classification)
+			}
+			fmt.Printf("  • %s: %s\n", ui.WarningLine(code), failure.Reason)
+			if failure.RootCause != "" {
+				fmt.Printf("    Root Cause: %s\n", failure.RootCause)
+			}
+			if failure.SuggestedFix != "" {
+				fmt.Printf("    Suggested Fix: %s\n", ui.InfoLine(failure.SuggestedFix))
+			}
+		}
+	} else if !report.Success && report.RootCause != "" {
+		fmt.Println()
+		fmt.Println(ui.HeadingStyle.Render("Diagnostics"))
+		code := string(report.ErrorCode)
+		if code != "" {
+			fmt.Printf("  • %s: %s\n", ui.WarningLine(code), report.FailureReason)
+		}
+		fmt.Printf("    Root Cause: %s\n", report.RootCause)
+		if report.SuggestedFix != "" {
+			fmt.Printf("    Suggested Fix: %s\n", ui.InfoLine(report.SuggestedFix))
+		}
+	}
+
 	if len(report.Decisions) > 0 {
 		fmt.Println()
 		fmt.Println(ui.HeadingStyle.Render("Decision trace"))
@@ -655,6 +694,12 @@ func printExecutionReport(report intelligence.ExecutionReport) {
 				fmt.Println(ui.SuccessLine(fmt.Sprintf("%s → %s", decision.OptionID, ui.Command(decision.Value))))
 			case "failed":
 				fmt.Println(ui.ErrorLine(fmt.Sprintf("%s → candidate failed", decision.OptionID)))
+				if decision.RootCause != "" {
+					fmt.Printf("    Root Cause: %s\n", decision.RootCause)
+				}
+				if decision.SuggestedFix != "" {
+					fmt.Printf("    Suggested Fix: %s\n", ui.InfoLine(decision.SuggestedFix))
+				}
 			}
 		}
 	}
@@ -666,6 +711,40 @@ type reportedError struct{ err error }
 
 func (e reportedError) Error() string { return e.err.Error() }
 func (e reportedError) Unwrap() error { return e.err }
+
+type envErrorJSON struct {
+	Success bool         `json:"success"`
+	Error   envErrorBody `json:"error"`
+}
+
+type envErrorBody struct {
+	Code         string   `json:"code"`
+	Message      string   `json:"message"`
+	RootCause    string   `json:"root_cause,omitempty"`
+	SuggestedFix string   `json:"suggested_fix,omitempty"`
+	Missing      []string `json:"missing,omitempty"`
+}
+
+func envFailure(jsonOutput bool, diag intelligence.FailureDiagnostic, model intelligence.ProjectModel) error {
+	if !jsonOutput {
+		return errors.New(diag.RootCause)
+	}
+	body := envErrorBody{
+		Code:         string(diag.Code),
+		Message:      diag.RootCause,
+		RootCause:    diag.RootCause,
+		SuggestedFix: diag.SuggestedFix,
+	}
+	if diag.MissingKey != "" {
+		body.Missing = []string{diag.MissingKey}
+	}
+	data, marshalErr := json.MarshalIndent(envErrorJSON{Success: false, Error: body}, "", "  ")
+	if marshalErr != nil {
+		return errors.New(diag.RootCause)
+	}
+	fmt.Println(string(data))
+	return reportedError{err: errors.New(diag.RootCause)}
+}
 
 type selectionErrorJSON struct {
 	Success bool               `json:"success"`

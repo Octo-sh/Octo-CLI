@@ -33,13 +33,16 @@ type DecisionResult struct {
 
 // DecisionTraceEntry records one bounded decision without command output or resolved secrets.
 type DecisionTraceEntry struct {
-	Name       string     `json:"name" yaml:"name"`
-	OptionID   string     `json:"option_id" yaml:"option_id"`
-	Value      string     `json:"value" yaml:"value"`
-	Confidence float64    `json:"confidence" yaml:"confidence"`
-	Reason     string     `json:"reason" yaml:"reason"`
-	Evidence   []Evidence `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Outcome    string     `json:"outcome" yaml:"outcome"`
+	Name         string      `json:"name" yaml:"name"`
+	OptionID     string      `json:"option_id" yaml:"option_id"`
+	Value        string      `json:"value" yaml:"value"`
+	Confidence   float64     `json:"confidence" yaml:"confidence"`
+	Reason       string      `json:"reason" yaml:"reason"`
+	Evidence     []Evidence  `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Outcome      string      `json:"outcome" yaml:"outcome"`
+	ErrorCode    FailureCode `json:"error_code,omitempty" yaml:"error_code,omitempty"`
+	RootCause    string      `json:"root_cause,omitempty" yaml:"root_cause,omitempty"`
+	SuggestedFix string      `json:"suggested_fix,omitempty" yaml:"suggested_fix,omitempty"`
 }
 
 // DecisionProvider resolves bounded ambiguity without owning repository

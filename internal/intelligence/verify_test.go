@@ -41,12 +41,39 @@ func TestVerifyReachablePort(t *testing.T) {
 
 func TestVerifyReportsUnavailablePort(t *testing.T) {
 	port := freeTestPort(t)
-	_, err := Verify(context.Background(), []VerificationCheck{{
+	results, err := Verify(context.Background(), []VerificationCheck{{
 		ID: "port.web", Kind: VerificationPort, Component: "web",
 		Host: "127.0.0.1", Port: port, Timeout: 100 * time.Millisecond,
 	}})
 	if err == nil {
 		t.Fatal("expected verification failure")
+	}
+	if len(results) != 1 || results[0].Passed {
+		t.Fatalf("expected 1 failed result, got %+v", results)
+	}
+	if results[0].ErrorCode != FailurePortConflict {
+		t.Fatalf("expected ErrorCode FailurePortConflict, got %s", results[0].ErrorCode)
+	}
+	if results[0].RootCause == "" || results[0].SuggestedFix == "" {
+		t.Fatalf("expected RootCause and SuggestedFix, got %+v", results[0])
+	}
+}
+
+func TestHTTPVerificationProviderDiagnostics(t *testing.T) {
+	port := freeTestPort(t)
+	provider := &HTTPVerificationProvider{}
+	res, err := provider.Verify(context.Background(), VerificationCheck{
+		ID: "http.web", Kind: VerificationHTTP, Component: "web",
+		Host: "127.0.0.1", Port: port, Path: "/healthz", Timeout: 100 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected HTTP verification failure for unreachable port")
+	}
+	if res.Passed {
+		t.Fatal("expected check to fail")
+	}
+	if res.ErrorCode == "" || res.RootCause == "" || res.SuggestedFix == "" {
+		t.Fatalf("expected diagnostic details, got %+v", res)
 	}
 }
 

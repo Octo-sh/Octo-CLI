@@ -53,6 +53,27 @@ func (e *MissingRequiredEnvError) Error() string {
 	return fmt.Sprintf("missing required environment variables: %v", e.Missing)
 }
 
+// FailureDiagnostic produces a structured failure diagnostic for missing environment secrets.
+func (e *MissingRequiredEnvError) FailureDiagnostic() FailureDiagnostic {
+	if len(e.Missing) == 1 {
+		key := e.Missing[0]
+		placeholder := placeholderFor(key, ProjectModel{})
+		return FailureDiagnostic{
+			Code:         FailureMissingEnvSecret,
+			Class:        FailureClassMissingEnvSecret,
+			RootCause:    fmt.Sprintf("Required environment secret/variable %q is missing from local configuration.", key),
+			SuggestedFix: fmt.Sprintf("Run 'octo env init' or set %s=%s in your .env file.", key, placeholder),
+			MissingKey:   key,
+		}
+	}
+	return FailureDiagnostic{
+		Code:         FailureMissingEnvSecret,
+		Class:        FailureClassMissingEnvSecret,
+		RootCause:    fmt.Sprintf("Required environment secrets [%s] are missing from local configuration.", strings.Join(e.Missing, ", ")),
+		SuggestedFix: fmt.Sprintf("Run 'octo env init' or configure [%s] in your .env file.", strings.Join(e.Missing, ", ")),
+	}
+}
+
 // ResolveEnvironmentOptions controls validation behavior during environment resolution.
 type ResolveEnvironmentOptions struct {
 	SkipRequiredCheck bool

@@ -15,6 +15,66 @@ type PortAssignment struct {
 	Strict    bool   `json:"strict,omitempty" yaml:"strict,omitempty"`
 }
 
+// PortConflict represents a port collision on a host TCP port.
+type PortConflict struct {
+	Port        int  `json:"port" yaml:"port"`
+	Strict      bool `json:"strict" yaml:"strict"`
+	Alternative int  `json:"alternative,omitempty" yaml:"alternative,omitempty"`
+}
+
+// PortConflictError indicates a failure to allocate an expected TCP port.
+type PortConflictError struct {
+	Port     int
+	Strict   bool
+	NextFree int
+}
+
+func (e *PortConflictError) Error() string {
+	if e.Strict {
+		if e.NextFree > 0 {
+			return fmt.Sprintf("requested TCP port %d is unavailable and the application declares it strictly (next free: %d)", e.Port, e.NextFree)
+		}
+		return fmt.Sprintf("requested TCP port %d is unavailable and the application declares it strictly", e.Port)
+	}
+	return fmt.Sprintf("no available TCP port found starting at %d", e.Port)
+}
+
+// FindNextFreePort searches for the next available TCP port starting from start.
+func FindNextFreePort(start int, reserved map[int]struct{}) int {
+	if start <= 0 {
+		start = 3000
+	}
+	for port := start; port < 65536; port++ {
+		if reserved != nil {
+			if _, exists := reserved[port]; exists {
+				continue
+			}
+		}
+		if portAvailable(port) {
+			return port
+		}
+	}
+	return 0
+}
+
+// CheckPortConflict checks whether a requested port is occupied and finds an alternative if so.
+func CheckPortConflict(requested int, reserved map[int]struct{}) (PortConflict, bool) {
+	if requested <= 0 {
+		return PortConflict{}, false
+	}
+	if reserved != nil {
+		if _, exists := reserved[requested]; exists {
+			alt := FindNextFreePort(requested+1, reserved)
+			return PortConflict{Port: requested, Strict: false, Alternative: alt}, true
+		}
+	}
+	if !portAvailable(requested) {
+		alt := FindNextFreePort(requested+1, reserved)
+		return PortConflict{Port: requested, Strict: false, Alternative: alt}, true
+	}
+	return PortConflict{Port: requested}, false
+}
+
 // PortAllocator finds deterministic free TCP ports.
 type PortAllocator struct {
 	StartOffset int
@@ -26,7 +86,12 @@ func (a PortAllocator) Allocate(requested int, reserved map[int]struct{}, strict
 	}
 	if strict {
 		if _, exists := reserved[requested]; exists || !portAvailable(requested) {
-			return 0, false, fmt.Errorf("requested TCP port %d is unavailable and the application declares it strictly", requested)
+			alt := FindNextFreePort(requested+1, reserved)
+			return 0, false, &PortConflictError{
+				Port:     requested,
+				Strict:   true,
+				NextFree: alt,
+			}
 		}
 		return requested, false, nil
 	}
@@ -42,7 +107,11 @@ func (a PortAllocator) Allocate(requested int, reserved map[int]struct{}, strict
 			return port, port != requested, nil
 		}
 	}
-	return 0, false, fmt.Errorf("no available TCP port found starting at %d", start)
+	return 0, false, &PortConflictError{
+		Port:     start,
+		Strict:   false,
+		NextFree: 0,
+	}
 }
 
 func portAvailable(port int) bool {

@@ -57,6 +57,10 @@ var verifyCmd = &cobra.Command{
 			}
 			if verifyErr != nil {
 				report["error"] = verifyErr.Error()
+				diag := intelligence.DiagnoseExecutionFailure(verifyErr.Error(), verifyErr)
+				report["error_code"] = diag.Code
+				report["root_cause"] = diag.RootCause
+				report["suggested_fix"] = diag.SuggestedFix
 			}
 			data, err := json.MarshalIndent(report, "", "  ")
 			if err != nil {
@@ -78,6 +82,12 @@ var verifyCmd = &cobra.Command{
 					fmt.Println(ui.SuccessLine(fmt.Sprintf("%s: passed (%s)", res.CheckID, res.Reason)))
 				} else {
 					fmt.Println(ui.ErrorLine(fmt.Sprintf("%s: failed (%s)", res.CheckID, res.Reason)))
+					if res.RootCause != "" {
+						fmt.Printf("    Root Cause: %s\n", res.RootCause)
+					}
+					if res.SuggestedFix != "" {
+						fmt.Printf("    Suggested Fix: %s\n", ui.InfoLine(res.SuggestedFix))
+					}
 				}
 			}
 		}

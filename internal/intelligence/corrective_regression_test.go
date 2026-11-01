@@ -275,3 +275,83 @@ func TestTopologyAcceptsBareAndTypedServiceDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestPortConflictRemediationSuggestion(t *testing.T) {
+	port := freeTestPort(t)
+	// Reserve the port to simulate collision
+	reserved := map[int]struct{}{port: {}}
+	allocator := PortAllocator{}
+	allocatedPort, shifted, err := allocator.Allocate(port, reserved, true)
+	if err == nil {
+		t.Fatalf("expected error for strictly declared reserved port %d, got %d", port, allocatedPort)
+	}
+	if shifted {
+		t.Fatal("strict allocation must not silently shift")
+	}
+
+	var conflictErr *PortConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected *PortConflictError, got %T: %v", err, err)
+	}
+	if conflictErr.Port != port {
+		t.Fatalf("expected Port %d, got %d", port, conflictErr.Port)
+	}
+	if conflictErr.NextFree <= 0 || conflictErr.NextFree == port {
+		t.Fatalf("expected valid next free port, got %d", conflictErr.NextFree)
+	}
+
+	diag := DiagnoseExecutionFailure(conflictErr.Error(), conflictErr)
+	if diag.Code != FailurePortConflict {
+		t.Fatalf("expected FailurePortConflict, got %s", diag.Code)
+	}
+	if !strings.Contains(diag.SuggestedFix, "octo run --port") {
+		t.Fatalf("expected suggested fix to include 'octo run --port', got: %s", diag.SuggestedFix)
+	}
+}
+
+func TestDiagnoseEnvironmentBindingsUnsatisfied(t *testing.T) {
+	model := ProjectModel{
+		Name: "api-service",
+		Components: []Component{
+			{
+				Name: "web",
+				References: []Reference{
+					{
+						Variable: "DATABASE_URL",
+						Target:   "postgres",
+						Kind:     RelationshipNetworkReference,
+					},
+				},
+			},
+		},
+	}
+	env := ResolvedEnvironment{Values: map[string]string{}}
+	diags := DiagnoseEnvironmentBindings(model, env)
+	if len(diags) != 1 {
+		t.Fatalf("expected 1 missing binding diagnostic, got %d", len(diags))
+	}
+	d := diags[0]
+	if d.Variable != "DATABASE_URL" {
+		t.Fatalf("expected variable DATABASE_URL, got %s", d.Variable)
+	}
+	if d.Diagnostic.Code != FailureMissingEnvSecret {
+		t.Fatalf("expected FailureMissingEnvSecret, got %s", d.Diagnostic.Code)
+	}
+	if !strings.Contains(d.Diagnostic.SuggestedFix, "DATABASE_URL=postgresql://") {
+		t.Fatalf("expected suggested fix with postgres placeholder, got: %s", d.Diagnostic.SuggestedFix)
+	}
+}
+
+func TestDockerDaemonUnavailableDiagnostic(t *testing.T) {
+	fakeErr := errors.New("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+	diag := DiagnoseExecutionFailure(fakeErr.Error(), fakeErr)
+	if diag.Code != FailureDaemonUnavailable {
+		t.Fatalf("expected FailureDaemonUnavailable, got %s", diag.Code)
+	}
+	if !strings.Contains(diag.RootCause, "Docker daemon is not running") {
+		t.Fatalf("expected clear root cause, got: %s", diag.RootCause)
+	}
+	if !strings.Contains(diag.SuggestedFix, "Start Docker Desktop") && !strings.Contains(diag.SuggestedFix, "docker") {
+		t.Fatalf("expected actionable suggested fix, got: %s", diag.SuggestedFix)
+	}
+}
