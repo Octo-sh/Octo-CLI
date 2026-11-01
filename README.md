@@ -22,7 +22,7 @@
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#30-second-quickstart">30s Quickstart</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="#ai-agent-companion-octo-mcp">AI Agent Companion</a>
+  <a href="#using-octo-as-an-mcp-server-cursor--claude-code--windsurf">MCP Server</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#why-octo">Why Octo?</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
@@ -121,13 +121,16 @@ octo run       # or: octo r
 
 ---
 
-## AI Agent Companion (`octo mcp`)
+<a id="ai-agent-companion-octo-mcp"></a>
+## Using Octo as an MCP Server (Cursor / Claude Code / Windsurf)
 
-When AI coding agents (Claude Code, Cursor, Windsurf, Cline) execute code directly through raw bash commands, they can burn a large share of their context tokens trial-and-erroring missing packages, colliding ports, and orphaning background processes.
+When AI coding agents (such as Claude Code, Cursor, Windsurf, Antigravity, or Cline) execute code directly through raw bash commands, they burn a large share of their context window trial-and-erroring missing packages, colliding ports, and orphaning background processes.
 
-Octo includes a native **JSON-RPC 2.0 Model Context Protocol (MCP)** server over stdio. Connect Octo to your favorite AI agent to give it deterministic, zero-hallucination execution capabilities:
+Octo includes a native **JSON-RPC 2.0 Model Context Protocol (MCP)** server over standard I/O (`stdio`). Connect Octo to your favorite AI coding assistant to give it deterministic, zero-hallucination execution, structured root-cause diagnostics, and clean process-group teardown without zombie processes.
 
-### Add to Cursor (`.cursor/mcp.json`):
+### Quickstart Configuration
+
+#### 1. Cursor (`.cursor/mcp.json` or `~/.cursor/mcp.json`)
 ```json
 {
   "mcpServers": {
@@ -139,17 +142,45 @@ Octo includes a native **JSON-RPC 2.0 Model Context Protocol (MCP)** server over
 }
 ```
 
-### Add to Claude Code:
+#### 2. Claude Code CLI
 ```bash
 claude mcp add octo -- octo mcp
 ```
 
-### Available Agent Tools:
-- `octo_inspect`: Analyzes the repository to detect language, framework, runtime version, and package manager.
-- `octo_plan`: Generates the deterministic dependency-ordered execution plan.
-- `octo_preview`: Previews machine changes, required packages, and network port reservations.
-- `octo_run_and_verify`: Autonomously executes the stack and verifies runtime health without raw shell guessing.
-- `octo_verify`: Validates live services and lockfile fingerprint integrity.
+#### 3. Windsurf (`~/.codeium/windsurf/mcp_config.json`)
+```json
+{
+  "mcpServers": {
+    "octo": {
+      "command": "octo",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Available Agent Tools
+
+| Tool | Purpose | Description & Capabilities |
+| :--- | :--- | :--- |
+| `octo_inspect` | Technology Inspection | Analyzes repository languages, frameworks, runtime versions, package managers, and component models. |
+| `octo_topology` | Unified Dependency Graph | Returns nodes, execution edges, components, services, and cross-service environment bindings (`ResolveEnvironmentBindings`). |
+| `octo_plan` | Deterministic Planning | Returns multi-step plan (`steps`, `ports`, `environment`) plus explainable `decisions` trace without mutating machine state. |
+| `octo_preview` | Pre-Execution Assessment | Projects filesystem mutations, network port reservations, and spawned processes before running commands. |
+| `octo_env_check` | Environment Validation | Reports required vs. missing environment variables from template definitions, critical missing secrets, and cross-service bindings. (`octo_env` is available as a backwards-compatible alias). |
+| `octo_verify` | Runtime State Verification | Validates live listening ports and healthchecks. Returns structured root-cause diagnostics (`error_code`, `root_cause`, `suggested_fix`) on failure. |
+| `octo_run_and_verify` | Safe Execution & Smoke Checks | Executes repository plan with verified startup checks. Supports detached background mode (`detach: true`), sandboxing (`sandbox: true`), bounded timeouts, and strict process-group teardown. |
+| `octo_diagnose` | Root-Cause Analysis | Explains the exact evidence behind decisions and provides actionable remediation steps for errors. |
+| `octo_benchmark` | Agent Benchmark Metrics | Evaluates autonomous agent pass@1, hallucination rate, and execution readiness across repositories or standard benchmark suites. |
+
+### Available MCP Resources
+
+| URI | Content |
+| :--- | :--- |
+| `octo://topology` | Unified repository dependency graph, detected components, services, and cross-service references. |
+| `octo://execution-plan` | Deterministic execution steps, port assignments, and decision trace. |
+| `octo://env` | Environment variable status (present, missing required, critical missing) and safe placeholder template. |
+| `octo://lock` | Verified candidate fingerprint cache (`.octo.lock`). |
 
 ---
 

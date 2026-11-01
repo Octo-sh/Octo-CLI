@@ -191,6 +191,11 @@ func (r ExecutionReport) StartupResult() VerifiedStartupResult {
 	}
 }
 
+// RunningHandles returns the live process handles retained by this execution report.
+func (r ExecutionReport) RunningHandles() []RunningProcess {
+	return r.runningProcesses
+}
+
 func parseComposeUpCommand(command string) (file string, service string, ok bool) {
 	parts := strings.Fields(command)
 	if len(parts) >= 6 &&

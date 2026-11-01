@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/Octo-sh/Octo-CLI/internal/benchmark"
 	"github.com/Octo-sh/Octo-CLI/internal/intelligence"
+	"github.com/Octo-sh/Octo-CLI/internal/secrets"
 )
 
 func DefaultTools() []Tool {
@@ -28,7 +31,7 @@ func DefaultTools() []Tool {
 		},
 		{
 			Name:        "octo_topology",
-			Description: "Return the validated dependency and relationship graph of components and infrastructure services.",
+			Description: "Return the validated dependency and relationship graph of components, infrastructure services, and cross-service references.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -41,7 +44,7 @@ func DefaultTools() []Tool {
 		},
 		{
 			Name:        "octo_plan",
-			Description: "Generate the deterministic multi-step execution plan for a repository without executing it.",
+			Description: "Generate the deterministic multi-step execution plan and decision trace for a repository without executing it.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -65,7 +68,7 @@ func DefaultTools() []Tool {
 		},
 		{
 			Name:        "octo_run_and_verify",
-			Description: "Execute the deterministic plan for a repository, verifying startup and health, and capturing active processes.",
+			Description: "Execute the deterministic plan for a repository, verifying startup and health, and capturing active processes with strict process-group teardown.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -79,7 +82,11 @@ func DefaultTools() []Tool {
 					},
 					"sandbox": {
 						Type:        "boolean",
-						Description: "Run plan steps inside an ephemeral container (Docker or Podman) for environment isolation. Note: project environment variables are forwarded to the container and it should not be considered a hardened security boundary.",
+						Description: "Run plan steps inside an ephemeral container (Docker or Podman) for environment isolation.",
+					},
+					"timeout": {
+						Type:        "integer",
+						Description: "Optional timeout in seconds for execution and verification (default: 30s in attached mode, 60s in detached mode).",
 					},
 					"only": {
 						Type:        "array",
@@ -97,13 +104,17 @@ func DefaultTools() []Tool {
 		},
 		{
 			Name:        "octo_verify",
-			Description: "Verify expected runtime state (ports, healthchecks) and inspect or manage .octo.lock verified state.",
+			Description: "Verify expected runtime state (ports, healthchecks) with bounded timeouts and structured failure diagnostics, inspecting .octo.lock verified state.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"path": {
 						Type:        "string",
 						Description: "Path to the repository directory (defaults to current working directory).",
+					},
+					"timeout": {
+						Type:        "integer",
+						Description: "Optional timeout in seconds for runtime verification checks (default: 10s).",
 					},
 				},
 			},
@@ -122,8 +133,21 @@ func DefaultTools() []Tool {
 			},
 		},
 		{
+			Name:        "octo_env_check",
+			Description: "Validate required vs. missing environment variables against detected secrets, template definitions, and cross-service bindings.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"path": {
+						Type:        "string",
+						Description: "Path to the repository directory (defaults to current working directory).",
+					},
+				},
+			},
+		},
+		{
 			Name:        "octo_env",
-			Description: "Inspect present and missing environment variables, and generate safe non-secret configuration templates.",
+			Description: "Alias for octo_env_check: Inspect present and missing environment variables, and generate safe non-secret configuration templates.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -181,8 +205,8 @@ func ExecuteTool(ctx context.Context, name string, args map[string]interface{}) 
 		return handleVerify(ctx, args)
 	case "octo_diagnose":
 		return handleDiagnose(ctx, args)
-	case "octo_env":
-		return handleEnv(ctx, args)
+	case "octo_env_check", "octo_env":
+		return handleEnvCheck(ctx, args)
 	case "octo_preview":
 		return handlePreview(ctx, args)
 	case "octo_benchmark":
@@ -256,6 +280,11 @@ func parseSelectionOptions(args map[string]interface{}) (intelligence.SelectionO
 	return opts, nil
 }
 
+type PlanResult struct {
+	intelligence.ExecutionPlan
+	Decisions []intelligence.DecisionTrace `json:"decisions,omitempty"`
+}
+
 func handlePlan(ctx context.Context, args map[string]interface{}) (CallToolResult, error) {
 	target, err := resolvePath(args)
 	if err != nil {
@@ -284,7 +313,13 @@ func handlePlan(ctx context.Context, args map[string]interface{}) (CallToolResul
 		return toolError(fmt.Sprintf("planning failed: %v", err)), nil
 	}
 
-	data, err := json.MarshalIndent(plan, "", "  ")
+	decisions := intelligence.BuildDecisionTrace(model, plan)
+	result := PlanResult{
+		ExecutionPlan: plan,
+		Decisions:     decisions,
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to serialize plan: %v", err)), nil
 	}
@@ -307,6 +342,20 @@ func handleRunAndVerify(ctx context.Context, args map[string]interface{}) (CallT
 	if d, ok := args["detach"].(bool); ok {
 		detach = d
 	}
+
+	// Bounded execution timeout for agent safety (default: 30s in attached mode, 60s in detached mode)
+	timeoutSec := 30
+	if detach {
+		timeoutSec = 60
+	}
+	if tVal, ok := args["timeout"].(float64); ok && tVal > 0 {
+		timeoutSec = int(tVal)
+	} else if tVal, ok := args["timeout"].(int); ok && tVal > 0 {
+		timeoutSec = tVal
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
 
 	model, err := intelligence.Analyze(target)
 	if err != nil {
@@ -332,7 +381,7 @@ func handleRunAndVerify(ctx context.Context, args map[string]interface{}) (CallT
 	model = selection.FilteredModel
 
 	planner := intelligence.DeterministicPlanner{}
-	plan, err := planner.Plan(ctx, model)
+	plan, err := planner.Plan(execCtx, model)
 	if err != nil {
 		return toolError(fmt.Sprintf("planning failed: %v", err)), nil
 	}
@@ -363,13 +412,19 @@ func handleRunAndVerify(ctx context.Context, args map[string]interface{}) (CallT
 		Sandbox: sandbox,
 		Root:    target,
 	})
-	report := intelligence.ExecutePlanReportWithOptions(ctx, model, plan, resolver, env, opts)
+	report := intelligence.ExecutePlanReportWithOptions(execCtx, model, plan, resolver, env, opts)
 
 	if report.Success && detach {
 		if err := intelligence.SaveDetachedState(target, report); err != nil {
 			report.Success = false
 			report.FailureReason = fmt.Sprintf("failed to save detached state: %v", err)
 		}
+	} else if !detach && len(report.ActiveProcesses) > 0 {
+		// In attached/smoke-check verification mode, tear down active processes cleanly
+		// using process groups so no background processes or child processes leak.
+		teardownOpts := opts
+		teardownOpts.OwnedServices = report.OwnedServices
+		_ = intelligence.TeardownExecution(model, plan, report.RunningHandles(), teardownOpts)
 	}
 
 	data, err := json.MarshalIndent(report, "", "  ")
@@ -436,6 +491,13 @@ func handleDiagnose(ctx context.Context, args map[string]interface{}) (CallToolR
 	}, nil
 }
 
+type TopologyResult struct {
+	intelligence.TopologyGraph
+	Components []intelligence.Component             `json:"components,omitempty"`
+	Services   []intelligence.Service               `json:"services,omitempty"`
+	Bindings   []intelligence.EnvironmentResolution `json:"bindings,omitempty"`
+}
+
 func handleTopology(ctx context.Context, args map[string]interface{}) (CallToolResult, error) {
 	target, err := resolvePath(args)
 	if err != nil {
@@ -452,7 +514,14 @@ func handleTopology(ctx context.Context, args map[string]interface{}) (CallToolR
 		return toolError(fmt.Sprintf("topology construction failed: %v", err)), nil
 	}
 
-	data, err := json.MarshalIndent(graph, "", "  ")
+	result := TopologyResult{
+		TopologyGraph: graph,
+		Components:    model.Components,
+		Services:      model.Services,
+		Bindings:      intelligence.ResolveEnvironmentBindings(model),
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to serialize topology: %v", err)), nil
 	}
@@ -466,12 +535,16 @@ func handleTopology(ctx context.Context, args map[string]interface{}) (CallToolR
 }
 
 type VerificationReport struct {
-	ProjectName string                            `json:"project_name"`
-	Success     bool                              `json:"success"`
-	Checks      []intelligence.VerificationResult `json:"checks,omitempty"`
-	LockPresent bool                              `json:"lock_present"`
-	LockEntries int                               `json:"lock_entries,omitempty"`
-	Error       string                            `json:"error,omitempty"`
+	ProjectName  string                            `json:"project_name"`
+	Success      bool                              `json:"success"`
+	Checks       []intelligence.VerificationResult `json:"checks,omitempty"`
+	LockPresent  bool                              `json:"lock_present"`
+	LockEntries  int                               `json:"lock_entries,omitempty"`
+	Error        string                            `json:"error,omitempty"`
+	ErrorCode    intelligence.FailureCode          `json:"error_code,omitempty"`
+	RootCause    string                            `json:"root_cause,omitempty"`
+	SuggestedFix string                            `json:"suggested_fix,omitempty"`
+	Diagnostic   *intelligence.FailureDiagnostic   `json:"diagnostic,omitempty"`
 }
 
 func handleVerify(ctx context.Context, args map[string]interface{}) (CallToolResult, error) {
@@ -480,19 +553,29 @@ func handleVerify(ctx context.Context, args map[string]interface{}) (CallToolRes
 		return toolError(err.Error()), nil
 	}
 
+	timeoutSec := 10
+	if tVal, ok := args["timeout"].(float64); ok && tVal > 0 {
+		timeoutSec = int(tVal)
+	} else if tVal, ok := args["timeout"].(int); ok && tVal > 0 {
+		timeoutSec = tVal
+	}
+
+	verifyCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
 	model, err := intelligence.Analyze(target)
 	if err != nil {
 		return toolError(fmt.Sprintf("analysis failed: %v", err)), nil
 	}
 
 	planner := intelligence.DeterministicPlanner{}
-	plan, err := planner.Plan(ctx, model)
+	plan, err := planner.Plan(verifyCtx, model)
 	if err != nil {
 		return toolError(fmt.Sprintf("planning failed: %v", err)), nil
 	}
 
 	checks := intelligence.BuildVerificationChecks(model, plan)
-	results, verifyErr := intelligence.Verify(ctx, checks)
+	results, verifyErr := intelligence.Verify(verifyCtx, checks)
 
 	lock, _ := intelligence.LoadOctoLock(target)
 	lockPresent := len(lock.Strategies) > 0
@@ -505,7 +588,27 @@ func handleVerify(ctx context.Context, args map[string]interface{}) (CallToolRes
 		LockEntries: len(lock.Strategies),
 	}
 	if verifyErr != nil {
+		report.Success = false
 		report.Error = verifyErr.Error()
+		for _, res := range results {
+			if !res.Passed && res.ErrorCode != "" {
+				report.ErrorCode = res.ErrorCode
+				report.RootCause = res.RootCause
+				report.SuggestedFix = res.SuggestedFix
+				break
+			}
+		}
+		if report.ErrorCode == "" {
+			diag := intelligence.DiagnoseExecutionFailure(verifyErr.Error(), verifyErr)
+			report.ErrorCode = diag.Code
+			report.RootCause = diag.RootCause
+			report.SuggestedFix = diag.SuggestedFix
+		}
+		report.Diagnostic = &intelligence.FailureDiagnostic{
+			Code:         report.ErrorCode,
+			RootCause:    report.RootCause,
+			SuggestedFix: report.SuggestedFix,
+		}
 	}
 
 	data, err := json.MarshalIndent(report, "", "  ")
@@ -522,7 +625,18 @@ func handleVerify(ctx context.Context, args map[string]interface{}) (CallToolRes
 	}, nil
 }
 
-func handleEnv(ctx context.Context, args map[string]interface{}) (CallToolResult, error) {
+type EnvCheckResult struct {
+	ProjectName     string                                  `json:"project_name"`
+	TotalVariables  int                                     `json:"total_variables"`
+	Present         []string                                `json:"present"`
+	MissingRequired []string                                `json:"missing_required"`
+	MissingOptional []string                                `json:"missing_optional"`
+	CriticalMissing []string                                `json:"critical_missing,omitempty"`
+	MissingBindings []intelligence.MissingBindingDiagnostic `json:"missing_bindings,omitempty"`
+	Template        string                                  `json:"template,omitempty"`
+}
+
+func handleEnvCheck(ctx context.Context, args map[string]interface{}) (CallToolResult, error) {
 	target, err := resolvePath(args)
 	if err != nil {
 		return toolError(err.Error()), nil
@@ -534,9 +648,42 @@ func handleEnv(ctx context.Context, args map[string]interface{}) (CallToolResult
 	}
 
 	status := intelligence.InspectEnvironmentStatus(target, model)
-	data, err := json.MarshalIndent(status, "", "  ")
+	env, _ := intelligence.ResolveProjectEnvironment(target, model)
+
+	criticalMap := make(map[string]bool)
+	for _, v := range status.MissingRequired {
+		if secrets.IsCriticalEnvVar(v) {
+			criticalMap[v] = true
+		}
+	}
+	for _, v := range status.MissingOptional {
+		if secrets.IsCriticalEnvVar(v) {
+			criticalMap[v] = true
+		}
+	}
+
+	var criticalMissing []string
+	for k := range criticalMap {
+		criticalMissing = append(criticalMissing, k)
+	}
+	sort.Strings(criticalMissing)
+
+	missingBindings := intelligence.DiagnoseEnvironmentBindings(model, env)
+
+	result := EnvCheckResult{
+		ProjectName:     model.Name,
+		TotalVariables:  status.TotalVariables,
+		Present:         status.Present,
+		MissingRequired: status.MissingRequired,
+		MissingOptional: status.MissingOptional,
+		CriticalMissing: criticalMissing,
+		MissingBindings: missingBindings,
+		Template:        status.Template,
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return toolError(fmt.Sprintf("failed to serialize environment status: %v", err)), nil
+		return toolError(fmt.Sprintf("failed to serialize environment check result: %v", err)), nil
 	}
 
 	return CallToolResult{
