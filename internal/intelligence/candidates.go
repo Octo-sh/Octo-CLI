@@ -139,20 +139,33 @@ func (GoExecutionCandidateProvider) Candidates(ctx context.Context, root string,
 	if err != nil { return nil, err }
 
 	hasMain := false
+	mainFile := "main.go"
 	goFiles := 0
 	for _, entry := range entries {
 		if entry.IsDir() { continue }
 		name := entry.Name()
 		if filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") { continue }
 		goFiles++
-		hasMain = hasMain || name == "main.go"
+		if name == "main.go" {
+			hasMain = true
+			mainFile = name
+		} else if !hasMain {
+			data, err := os.ReadFile(filepath.Join(componentRoot, name))
+			if err == nil {
+				text := string(data)
+				if strings.HasPrefix(strings.TrimSpace(text), "package main") || strings.Contains(text, "\npackage main") {
+					hasMain = true
+					mainFile = name
+				}
+			}
+		}
 	}
 
 	candidates := make([]ExecutionCandidate, 0, 8)
 	if hasMain {
 		candidates = append(candidates, ExecutionCandidate{
-			Kind: "application", ID: "go.main-file", Command: "go run main.go", Confidence: 0.78,
-			Evidence: []Evidence{{Kind: EvidenceConfig, Path: filepath.ToSlash(filepath.Join(component.Path, "main.go")), Detail: "A Go main package entry file exists.", Strength: 0.78}},
+			Kind: "application", ID: "go.main-file", Command: "go run " + mainFile, Confidence: 0.78,
+			Evidence: []Evidence{{Kind: EvidenceConfig, Path: filepath.ToSlash(filepath.Join(component.Path, mainFile)), Detail: "A Go main package entry file exists.", Strength: 0.78}},
 		})
 	}
 	if hasMain && goFiles > 1 {
@@ -323,12 +336,39 @@ func (PythonExecutionCandidateProvider) Candidates(ctx context.Context, root str
 
 	// 3. Flask: check for Flask application entry points
 	if component.Framework == "Flask" {
-		flaskEntries := []string{"app.py", "wsgi.py", "main.py"}
+		flaskEntries := []string{"app.py", "wsgi.py", "main.py", "autoapp.py", "server.py", "run.py"}
+		if component.Name != "" {
+			flaskEntries = append(flaskEntries, component.Name+".py")
+		}
+		base := filepath.Base(componentRoot)
+		if base != "" && base != "." && base != component.Name {
+			flaskEntries = append(flaskEntries, base+".py")
+		}
+		hasFlaskEnv := false
+		if envData, err := os.ReadFile(filepath.Join(componentRoot, ".flaskenv")); err == nil {
+			hasFlaskEnv = true
+			for _, line := range strings.Split(string(envData), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "FLASK_APP=") {
+					appFile := strings.Trim(strings.TrimPrefix(line, "FLASK_APP="), "\"' ")
+					if appFile != "" {
+						flaskEntries = append([]string{appFile}, flaskEntries...)
+					}
+				}
+			}
+		}
 		for _, file := range flaskEntries {
 			if _, err := os.Stat(filepath.Join(componentRoot, file)); err == nil {
 				flaskCmd := runPrefix + "flask run"
 				if component.PackageManager == "pip" {
 					flaskCmd = runPrefix + "python -m flask run"
+				}
+				if file != "app.py" && file != "wsgi.py" && !hasFlaskEnv {
+					mod := strings.TrimSuffix(file, ".py")
+					flaskCmd = runPrefix + "flask --app " + mod + " run"
+					if component.PackageManager == "pip" {
+						flaskCmd = runPrefix + "python -m flask --app " + mod + " run"
+					}
 				}
 				candidates = append(candidates, ExecutionCandidate{
 					ID:         "python.flask",
@@ -353,13 +393,33 @@ func (PythonExecutionCandidateProvider) Candidates(ctx context.Context, root str
 	}{
 		{"main.py", 0.90},
 		{"app.py", 0.85},
+		{"autoapp.py", 0.85},
+		{"server.py", 0.85},
+		{"run.py", 0.85},
 		{"app/main.py", 0.88},
 		{"app/app.py", 0.82},
 		{"src/main.py", 0.85},
 		{"src/app.py", 0.80},
 		{"wsgi.py", 0.78},
 	}
+	if component.Name != "" {
+		entryFiles = append(entryFiles, struct {
+			file       string
+			confidence float64
+		}{component.Name + ".py", 0.85})
+	}
+	if base := filepath.Base(componentRoot); base != "" && base != "." && base != component.Name {
+		entryFiles = append(entryFiles, struct {
+			file       string
+			confidence float64
+		}{base + ".py", 0.85})
+	}
+	seenEntryFiles := make(map[string]bool)
 	for _, entry := range entryFiles {
+		if seenEntryFiles[entry.file] {
+			continue
+		}
+		seenEntryFiles[entry.file] = true
 		if _, err := os.Stat(filepath.Join(componentRoot, entry.file)); err != nil {
 			continue
 		}
@@ -378,7 +438,31 @@ func (PythonExecutionCandidateProvider) Candidates(ctx context.Context, root str
 		})
 	}
 
-	// 5. Package modules exposing __main__.py
+	// 5. Procfile entry point
+	if procData, err := os.ReadFile(filepath.Join(componentRoot, "Procfile")); err == nil {
+		for _, line := range strings.Split(string(procData), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "web:") {
+				cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "web:"))
+				if cmd != "" {
+					candidates = append(candidates, ExecutionCandidate{
+						ID:         "python.procfile",
+						Command:    runPrefix + cmd,
+						Confidence: 0.94,
+						Evidence: []Evidence{{
+							Kind:     EvidenceConfig,
+							Path:     filepath.ToSlash(filepath.Join(component.Path, "Procfile")),
+							Detail:   "A Procfile web command was found.",
+							Strength: 0.94,
+						}},
+					})
+				}
+				break
+			}
+		}
+	}
+
+	// 6. Package modules exposing __main__.py
 	entries, err := os.ReadDir(componentRoot)
 	if err == nil {
 		for _, entry := range entries {
@@ -411,10 +495,22 @@ func (PythonExecutionCandidateProvider) Candidates(ctx context.Context, root str
 }
 
 func hasFastAPISignal(root string) bool {
-	for _, f := range []string{"pyproject.toml", "requirements.txt", "Pipfile"} {
+	for _, f := range []string{"pyproject.toml", "requirements.txt", "Pipfile", "setup.py"} {
 		if data, err := os.ReadFile(filepath.Join(root, f)); err == nil {
 			if strings.Contains(strings.ToLower(string(data)), "fastapi") {
 				return true
+			}
+		}
+	}
+	reqDir := filepath.Join(root, "requirements")
+	if entries, err := os.ReadDir(reqDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+				if data, err := os.ReadFile(filepath.Join(reqDir, e.Name())); err == nil {
+					if strings.Contains(strings.ToLower(string(data)), "fastapi") {
+						return true
+					}
+				}
 			}
 		}
 	}

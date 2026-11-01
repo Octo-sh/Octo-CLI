@@ -488,3 +488,19 @@ func TestPortlessDevServersMarkedLongRunning(t *testing.T) {
 	}
 }
 
+func TestPlannerHonestErrorOnEmptyModel(t *testing.T) {
+	model := ProjectModel{
+		Name: "docs-only",
+		Root: "/tmp/docs",
+	}
+	_, err := (DeterministicPlanner{}).Plan(context.Background(), model)
+	if err == nil {
+		t.Fatal("expected error on empty model, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Looked for project manifests") || !strings.Contains(msg, "pyproject.toml") || !strings.Contains(msg, "setup.py") {
+		t.Fatalf("expected detailed message with searched files, got: %s", msg)
+	}
+}
+
+

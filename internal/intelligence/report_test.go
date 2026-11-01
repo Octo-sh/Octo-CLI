@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -670,5 +671,298 @@ func TestExecutePlanReportPortlessProcessExitsNonZero(t *testing.T) {
 		t.Fatalf("expected recent output in failure reason, got %q", report.FailureReason)
 	}
 }
+
+func TestExtractListeningPorts(t *testing.T) {
+	cases := []struct {
+		log  string
+		want []int
+	}{
+		{
+			log:  "  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose",
+			want: []int{5173},
+		},
+		{
+			log:  " * Running on http://127.0.0.1:5000 (Press CTRL+C to quit)",
+			want: []int{5000},
+		},
+		{
+			log:  "Server is listening on port 3000",
+			want: []int{3000},
+		},
+		{
+			log:  "[Gogs] ... Listen: http://0.0.0.0:3000",
+			want: []int{3000},
+		},
+		{
+			log:  "Node-RED ... Server now running at http://127.0.0.1:1880/",
+			want: []int{1880},
+		},
+	}
+	for _, tc := range cases {
+		got := extractListeningPorts(tc.log)
+		if len(got) == 0 {
+			t.Fatalf("expected port from log %q, got none", tc.log)
+		}
+		if got[0] != tc.want[0] {
+			t.Fatalf("expected port %d, got %v", tc.want[0], got)
+		}
+	}
+}
+
+func TestDetectFatalLogError(t *testing.T) {
+	cases := []struct {
+		log  string
+		want bool
+	}{
+		{log: "panic: runtime error: invalid memory address", want: true},
+		{log: "listen tcp :8080: bind: address already in use", want: true},
+		{log: "Traceback (most recent call last):\n  File 'app.py', line 1", want: true},
+		{log: "FATAL: cannot connect to database", want: true},
+		{log: "Server started successfully on port 8080", want: false},
+	}
+	for _, tc := range cases {
+		got := detectFatalLogError(tc.log)
+		if (got != "") != tc.want {
+			t.Fatalf("detectFatalLogError(%q) = %q, want detected=%v", tc.log, got, tc.want)
+		}
+	}
+}
+
+func TestPortlessProcessStartedNotConfirmedNoLock(t *testing.T) {
+	proc := &mockGoExitingProcess{
+		alive:  true,
+		output: "worker process running in background...",
+	}
+	adapter := &mockGoStartableAdapter{proc: proc}
+
+	model := ProjectModel{
+		Name:     "worker",
+		Language: "Node",
+		Components: []Component{{
+			Name: "worker", Path: ".", Language: "Node", RunCommand: "node worker.js",
+		}},
+	}
+	plan := ExecutionPlan{
+		ProjectName: "worker",
+		Steps: []ExecutionStep{{
+			ID:          "component.worker.start",
+			Component:   "worker",
+			NodeID:      "component:worker",
+			Phase:       PhaseStart,
+			Command:     "node worker.js",
+			LongRunning: true,
+			Candidates: []ExecutionCandidate{{
+				ID: "node.entry", Command: "node worker.js",
+			}},
+		}},
+	}
+
+	report := ExecutePlanReportWithOptions(
+		context.Background(),
+		model,
+		plan,
+		RuntimeResolver{adapters: []RuntimeAdapter{adapter}},
+		ResolvedEnvironment{Values: map[string]string{}},
+		ExecutionOptions{Detach: true},
+	)
+
+	if !report.Success {
+		t.Fatalf("expected report.Success to be true, got failure: %s", report.FailureReason)
+	}
+	if report.VerifiedStartup {
+		t.Fatal("expected report.VerifiedStartup to be false for unconfirmed portless process")
+	}
+	if len(report.Steps) != 1 || report.Steps[0].Status != StepStartedNotConfirmed {
+		t.Fatalf("expected step status 'started, not confirmed', got %+v", report.Steps)
+	}
+
+	// Verify that RecordVerifiedStrategiesWithLock does NOT save lock
+	tmp := t.TempDir()
+	lock := OctoLock{Project: "worker"}
+	updatedLock, err := RecordVerifiedStrategiesWithLock(tmp, model, plan, report, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updatedLock.Strategies) != 0 {
+		t.Fatalf("expected 0 strategies saved in lock for unconfirmed process, got %d", len(updatedLock.Strategies))
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".octo.lock")); !os.IsNotExist(err) {
+		t.Fatal("expected .octo.lock not to be created for unconfirmed process")
+	}
+}
+
+func TestPortlessProcessDiscoveredPortVerified(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	proc := &mockGoExitingProcess{
+		alive:  true,
+		output: fmt.Sprintf("  ➜  Local:   http://localhost:%d/\n", port),
+	}
+	adapter := &mockGoStartableAdapter{proc: proc}
+
+	model := ProjectModel{
+		Name:     "web",
+		Language: "Node",
+		Components: []Component{{
+			Name: "web", Path: ".", Language: "Node", RunCommand: "npm start",
+		}},
+	}
+	plan := ExecutionPlan{
+		ProjectName: "web",
+		Steps: []ExecutionStep{{
+			ID:          "component.web.start",
+			Component:   "web",
+			NodeID:      "component:web",
+			Phase:       PhaseStart,
+			Command:     "npm start",
+			LongRunning: true,
+			Candidates: []ExecutionCandidate{{
+				ID: "npm.start", Command: "npm start",
+			}},
+		}},
+	}
+
+	report := ExecutePlanReportWithOptions(
+		context.Background(),
+		model,
+		plan,
+		RuntimeResolver{adapters: []RuntimeAdapter{adapter}},
+		ResolvedEnvironment{Values: map[string]string{}},
+		ExecutionOptions{Detach: true},
+	)
+
+	if !report.Success {
+		t.Fatalf("expected success, got %s", report.FailureReason)
+	}
+	if !report.VerifiedStartup {
+		t.Fatal("expected report.VerifiedStartup to be true when port is discovered and probed")
+	}
+	if len(report.ActiveProcesses) != 1 || !report.ActiveProcesses[0].Verified || report.ActiveProcesses[0].Port != port {
+		t.Fatalf("expected verified active process on port %d, got %+v", port, report.ActiveProcesses)
+	}
+}
+
+type mockMultiComponentAdapter struct {
+	procs map[string]RunningProcess
+}
+
+func (m *mockMultiComponentAdapter) Name() string                     { return "mock-multi" }
+func (m *mockMultiComponentAdapter) Supports(step ExecutionStep) bool { return true }
+func (m *mockMultiComponentAdapter) Execute(_ context.Context, _ ExecutionStep, _ ResolvedEnvironment) error {
+	return nil
+}
+func (m *mockMultiComponentAdapter) Start(_ context.Context, step ExecutionStep, _ ResolvedEnvironment) (RunningProcess, error) {
+	if p, ok := m.procs[step.ID]; ok {
+		return p, nil
+	}
+	return &mockGoExitingProcess{alive: true}, nil
+}
+
+func TestMultiComponentPartialVerification(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	uiPort := ln.Addr().(*net.TCPAddr).Port
+
+	uiProc := &mockGoExitingProcess{alive: true}
+	backendProc := &mockGoExitingProcess{alive: true, output: "worker running without port"}
+
+	mockMulti := &mockMultiComponentAdapter{
+		procs: map[string]RunningProcess{
+			"component.ui.start":      uiProc,
+			"component.backend.start": backendProc,
+		},
+	}
+
+	model := ProjectModel{
+		Name:     "monorepo",
+		Language: "Node",
+		Components: []Component{
+			{Name: "ui", Path: "ui", Language: "Node"},
+			{Name: "backend", Path: "backend", Language: "Go"},
+		},
+	}
+	plan := ExecutionPlan{
+		ProjectName: "monorepo",
+		Ports:       []PortAssignment{{Component: "ui", Requested: uiPort, Resolved: uiPort}},
+		Steps: []ExecutionStep{
+			{
+				ID:          "component.ui.start",
+				Component:   "ui",
+				NodeID:      "component:ui",
+				Phase:       PhaseStart,
+				Command:     "npm start",
+				LongRunning: true,
+				Candidates:  []ExecutionCandidate{{ID: "ui.start", Command: "npm start"}},
+			},
+			{
+				ID:          "component.backend.start",
+				Component:   "backend",
+				NodeID:      "component:backend",
+				Phase:       PhaseStart,
+				Command:     "go run .",
+				LongRunning: true,
+				Candidates:  []ExecutionCandidate{{ID: "backend.start", Command: "go run ."}},
+			},
+		},
+	}
+
+	report := ExecutePlanReportWithOptions(
+		context.Background(),
+		model,
+		plan,
+		RuntimeResolver{adapters: []RuntimeAdapter{mockMulti}},
+		ResolvedEnvironment{Values: map[string]string{}},
+		ExecutionOptions{Detach: true},
+	)
+
+	if !report.Success {
+		t.Fatalf("expected success, got %s", report.FailureReason)
+	}
+	if report.VerifiedStartup {
+		t.Fatal("expected report.VerifiedStartup to be false because backend was unconfirmed")
+	}
+
+	foundPartialNote := false
+	for _, n := range report.Notes {
+		if strings.Contains(n, "partially verified") && strings.Contains(n, "ui") && strings.Contains(n, "backend") {
+			foundPartialNote = true
+			break
+		}
+	}
+	if !foundPartialNote {
+		t.Fatalf("expected partial verification note in report.Notes, got %+v", report.Notes)
+	}
+
+	tmp := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmp, "ui"), 0o755)
+	lock := OctoLock{Project: "monorepo"}
+	updatedLock, err := RecordVerifiedStrategiesWithLock(tmp, model, plan, report, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range updatedLock.Strategies {
+		if s.Component == "backend" {
+			t.Fatal("backend must NOT be recorded in verified strategies")
+		}
+	}
+	foundUI := false
+	for _, s := range updatedLock.Strategies {
+		if s.Component == "ui" {
+			foundUI = true
+		}
+	}
+	if !foundUI {
+		t.Fatal("expected UI to be recorded in verified strategies")
+	}
+}
+
 
 

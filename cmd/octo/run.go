@@ -300,7 +300,11 @@ func runWithIntelligence(cmd *cobra.Command, args []string) error {
 
 		if !jsonOutput {
 			fmt.Println()
-			fmt.Println(ui.SuccessStyle.Render("✓ Execution verified successfully."))
+			if report.VerifiedStartup {
+				fmt.Println(ui.SuccessStyle.Render("✓ Execution verified successfully."))
+			} else {
+				fmt.Println(ui.WarningLine("Execution started (startup not confirmed)."))
+			}
 			if len(report.ActiveProcesses) > 0 {
 				fmt.Println()
 				fmt.Println(ui.HeadingStyle.Render("Running in detached mode:"))
@@ -309,7 +313,13 @@ func runWithIntelligence(cmd *cobra.Command, args []string) error {
 					if proc.Port > 0 {
 						portInfo = fmt.Sprintf(" → http://localhost:%d", proc.Port)
 					}
-					fmt.Printf("  • %s (PID: %d)%s\n", proc.Component, proc.PID, portInfo)
+					statusInfo := ""
+					if proc.Verified {
+						statusInfo = " [verified]"
+					} else {
+						statusInfo = " [started, not confirmed]"
+					}
+					fmt.Printf("  • %s (PID: %d)%s%s\n", proc.Component, proc.PID, portInfo, statusInfo)
 				}
 				fmt.Println(ui.Muted.Render("Active processes recorded in .octo/processes.json"))
 			}
@@ -507,7 +517,11 @@ func runWithIntelligence(cmd *cobra.Command, args []string) error {
 
 	if !jsonOutput {
 		fmt.Println()
-		fmt.Println(ui.SuccessStyle.Render("✓ Execution verified successfully."))
+		if report.VerifiedStartup {
+			fmt.Println(ui.SuccessStyle.Render("✓ Execution verified successfully."))
+		} else {
+			fmt.Println(ui.WarningLine("Execution started (startup not confirmed)."))
+		}
 	}
 	return nil
 }
@@ -560,11 +574,44 @@ func printExecutionReport(report intelligence.ExecutionReport) {
 			} else {
 				fmt.Println(ui.SuccessLine(label))
 			}
+		case intelligence.StepStartedNotConfirmed:
+			label := step.ID
+			if step.CandidateID != "" {
+				label += " · " + step.CandidateID
+			}
+			fmt.Println(ui.WarningLine(label + " — started, not confirmed"))
 		case intelligence.StepSkipped:
 			fmt.Println(ui.Muted.Render("○ " + step.ID + " — " + step.Reason))
 		case intelligence.StepFailed:
 			fmt.Println(ui.ErrorLine(fmt.Sprintf("%s — %s", step.ID, step.Reason)))
 		}
+	}
+
+	var verifiedComps, unconfirmedComps []string
+	seenV := make(map[string]bool)
+	seenU := make(map[string]bool)
+	for _, proc := range report.ActiveProcesses {
+		name := proc.Component
+		if name == "" {
+			name = proc.StepID
+		}
+		if proc.Verified {
+			if !seenV[name] {
+				seenV[name] = true
+				verifiedComps = append(verifiedComps, name)
+			}
+		} else {
+			if !seenU[name] {
+				seenU[name] = true
+				unconfirmedComps = append(unconfirmedComps, name)
+			}
+		}
+	}
+	if len(verifiedComps) > 0 && len(unconfirmedComps) > 0 {
+		fmt.Println()
+		fmt.Println(ui.InfoLine(fmt.Sprintf("Component verification: %s verified; %s unconfirmed",
+			strings.Join(verifiedComps, ", "),
+			strings.Join(unconfirmedComps, ", "))))
 	}
 
 	if len(report.Verification) > 0 {

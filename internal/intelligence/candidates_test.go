@@ -250,3 +250,106 @@ func TestRubyExecutionCandidateProviderRequiresGemfile(t *testing.T) {
 		t.Fatalf("candidates=%+v, want none", candidates)
 	}
 }
+
+func TestPythonExecutionCandidateProviderFlaskMicroblog(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "requirements.txt"), []byte("flask\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "microblog.py"), []byte("from app import app\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, ".flaskenv"), []byte("FLASK_APP=microblog.py\n"), 0o644)
+
+	candidates, err := (PythonExecutionCandidateProvider{}).Candidates(context.Background(), root, Component{
+		Name: "microblog", Language: "Python", Path: ".", Framework: "Flask",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected at least one candidate for microblog")
+	}
+	foundFlaskRun := false
+	for _, c := range candidates {
+		if c.Command == "python -m flask run" || c.Command == "flask run" {
+			foundFlaskRun = true
+			break
+		}
+	}
+	if !foundFlaskRun {
+		t.Fatalf("expected flask run candidate, got: %+v", candidates)
+	}
+}
+
+func TestPythonExecutionCandidateProviderAutoapp(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "Pipfile"), []byte("[packages]\nflask = \"*\"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "autoapp.py"), []byte("print('autoapp')\n"), 0o644)
+
+	candidates, err := (PythonExecutionCandidateProvider{}).Candidates(context.Background(), root, Component{
+		Name: "flask-app", Language: "Python", Path: ".", Framework: "Flask", PackageManager: "pipenv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected at least one candidate for autoapp")
+	}
+	found := false
+	for _, c := range candidates {
+		if c.Command == "pipenv run flask --app autoapp run" || c.Command == "pipenv run python autoapp.py" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected pipenv run candidate, got: %+v", candidates)
+	}
+}
+
+func TestPythonExecutionCandidateProviderProcfile(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "requirements.txt"), []byte("gunicorn\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "Procfile"), []byte("web: gunicorn myapp:app\n"), 0o644)
+
+	candidates, err := (PythonExecutionCandidateProvider{}).Candidates(context.Background(), root, Component{
+		Name: "myapp", Language: "Python", Path: ".",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundProcfile := false
+	for _, c := range candidates {
+		if c.ID == "python.procfile" && c.Command == "gunicorn myapp:app" {
+			foundProcfile = true
+			break
+		}
+	}
+	if !foundProcfile {
+		t.Fatalf("expected procfile candidate, got: %+v", candidates)
+	}
+}
+
+func TestGoExecutionCandidateProviderRootAppGo(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/gotify\n\ngo 1.26\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "app.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+
+	candidates, err := (GoExecutionCandidateProvider{}).Candidates(context.Background(), root, Component{
+		Name: "gotify", Language: "Go", Path: ".",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected at least one candidate for Go root app.go")
+	}
+	foundAppGo := false
+	for _, c := range candidates {
+		if c.Command == "go run app.go" || c.Command == "go run ." {
+			foundAppGo = true
+			break
+		}
+	}
+	if !foundAppGo {
+		t.Fatalf("expected go run candidate for app.go, got: %+v", candidates)
+	}
+}
+

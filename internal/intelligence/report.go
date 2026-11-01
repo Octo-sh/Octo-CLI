@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,11 +19,12 @@ import (
 type StepStatus string
 
 const (
-	StepPending   StepStatus = "pending"
-	StepRunning   StepStatus = "running"
-	StepSucceeded StepStatus = "succeeded"
-	StepSkipped   StepStatus = "skipped"
-	StepFailed    StepStatus = "failed"
+	StepPending             StepStatus = "pending"
+	StepRunning             StepStatus = "running"
+	StepSucceeded           StepStatus = "succeeded"
+	StepSkipped             StepStatus = "skipped"
+	StepFailed              StepStatus = "failed"
+	StepStartedNotConfirmed StepStatus = "started, not confirmed"
 )
 
 // ExecutionStepResult is safe to serialize and contains no command output or environment values.
@@ -46,6 +50,7 @@ type ActiveProcess struct {
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`
 	PID       int    `json:"pid,omitempty" yaml:"pid,omitempty"`
 	Port      int    `json:"port,omitempty" yaml:"port,omitempty"`
+	Verified  bool   `json:"verified,omitempty" yaml:"verified,omitempty"`
 }
 
 // ExecutionOptions configures execution behavior.
@@ -342,6 +347,117 @@ func verifyProcessLiveness(ctx context.Context, process RunningProcess, duration
 	}
 }
 
+var (
+	urlPortRegex        = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):([0-9]{2,5})`)
+	listenPortRegex     = regexp.MustCompile(`(?i)(?:listening|running|started|serving)\s+(?:on|at)\s+(?:https?://)?(?:[a-zA-Z0-9.-]+)?:([0-9]{2,5})`)
+	listenPortWordRegex = regexp.MustCompile(`(?i)(?:listening|running|started|serving|server)\s+(?:on\s+port|at\s+port|port)\s+([0-9]{2,5})`)
+	colonPortRegex      = regexp.MustCompile(`(?i)(?:listening|listen|running|server)\s+on\s+:([0-9]{2,5})`)
+)
+
+func extractListeningPorts(logText string) []int {
+	if logText == "" {
+		return nil
+	}
+	var ports []int
+	seen := make(map[int]bool)
+
+	addPort := func(p int) {
+		if p > 0 && p <= 65535 && !seen[p] {
+			seen[p] = true
+			ports = append(ports, p)
+		}
+	}
+
+	matches := urlPortRegex.FindAllStringSubmatch(logText, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			if p, err := strconv.Atoi(m[1]); err == nil {
+				addPort(p)
+			}
+		}
+	}
+
+	matches = listenPortRegex.FindAllStringSubmatch(logText, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			if p, err := strconv.Atoi(m[1]); err == nil {
+				addPort(p)
+			}
+		}
+	}
+
+	matches = listenPortWordRegex.FindAllStringSubmatch(logText, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			if p, err := strconv.Atoi(m[1]); err == nil {
+				addPort(p)
+			}
+		}
+	}
+
+	matches = colonPortRegex.FindAllStringSubmatch(logText, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			if p, err := strconv.Atoi(m[1]); err == nil {
+				addPort(p)
+			}
+		}
+	}
+
+	return ports
+}
+
+func detectFatalLogError(logText string) string {
+	if logText == "" {
+		return ""
+	}
+	lines := strings.Split(logText, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "address already in use") ||
+			strings.Contains(lower, "bind: address already in use") ||
+			strings.Contains(lower, "eaddrinuse") ||
+			strings.Contains(lower, "panic:") ||
+			strings.Contains(lower, "traceback (most recent call last):") ||
+			strings.Contains(lower, "error: cannot find module") ||
+			strings.HasPrefix(lower, "fatal:") ||
+			strings.Contains(lower, "[fatal]") {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func readProcessLog(process RunningProcess, step ExecutionStep) string {
+	var logPath string
+	if lp, ok := process.(LogAwareProcess); ok {
+		logPath = lp.LogPath()
+	}
+	if logPath == "" {
+		workDir := step.WorkDir
+		if workDir == "" {
+			workDir = "."
+		}
+		logName := step.Component
+		if logName == "" {
+			logName = "process"
+		}
+		logPath = filepath.Join(workDir, ".octo", "logs", logName+".log")
+	}
+	data, err := os.ReadFile(logPath)
+	if err == nil && len(data) > 0 {
+		return string(data)
+	}
+	if lo, ok := process.(interface{ LastOutput() string }); ok {
+		return lo.LastOutput()
+	}
+	return ""
+}
+
 // ExecutePlanReport executes a plan with default options and returns a serializable execution report.
 func ExecutePlanReport(ctx context.Context, model ProjectModel, plan ExecutionPlan, resolver RuntimeResolver, env ResolvedEnvironment) ExecutionReport {
 	return ExecutePlanReportWithOptions(ctx, model, plan, resolver, env, ExecutionOptions{})
@@ -447,6 +563,7 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 			}
 
 			result := ExecutionStepResult{ID: id, Status: StepRunning, Adapter: adapter.Name(), CandidateID: candidate.ID}
+			stepStartedNotConfirmed := false
 			// Resolve the environment at the execution boundary so component-local
 			// values are visible only to steps belonging to that component.
 			stepEnv := env.ForStep(attempt)
@@ -489,6 +606,7 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 				}
 				port := portForComponent(plan.Ports, attempt.Component)
 				cleanExited := false
+				stepVerified := false
 				if port > 0 {
 					if err := verifyPortWithProcess(ctx, "127.0.0.1", port, 5*time.Second, process); err != nil {
 						_ = process.Stop()
@@ -510,10 +628,12 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 						report.FailureReason = err.Error()
 						continue
 					}
+					stepVerified = true
 				} else if attempt.LongRunning {
 					livenessErr := verifyProcessLiveness(ctx, process, portlessStabilityWindow)
 					if errors.Is(livenessErr, ErrProcessExitedCleanly) {
 						cleanExited = true
+						stepVerified = true
 						compName := attempt.Component
 						if compName == "" {
 							compName = id
@@ -538,6 +658,50 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 						})
 						report.FailureReason = livenessErr.Error()
 						continue
+					} else {
+						logText := readProcessLog(process, attempt)
+						if fatalErr := detectFatalLogError(logText); fatalErr != "" {
+							_ = process.Stop()
+							_ = process.Wait()
+							failMsg := fmt.Sprintf("process log reported fatal error: %s", fatalErr)
+							result.Status = StepFailed
+							result.Reason = failMsg
+							for i := len(report.Decisions) - 1; i >= 0; i-- {
+								if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
+									report.Decisions[i].Outcome = "failed"
+									break
+								}
+							}
+							report.Steps = append(report.Steps, result)
+							classification := ClassifyExecutionFailure(failMsg, errors.New(failMsg))
+							report.Failures = append(report.Failures, ExecutionFailure{
+								StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: failMsg,
+								Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] %s", classification, failMsg), Strength: 1},
+							})
+							report.FailureReason = failMsg
+							continue
+						}
+
+						discoveredPorts := extractListeningPorts(logText)
+						var probedPort int
+						for _, dp := range discoveredPorts {
+							if probeErr := verifyPortWithProcess(ctx, "127.0.0.1", dp, 3*time.Second, process); probeErr == nil {
+								probedPort = dp
+								break
+							}
+						}
+
+						if probedPort > 0 {
+							port = probedPort
+							stepVerified = true
+						} else {
+							compName := attempt.Component
+							if compName == "" {
+								compName = id
+							}
+							report.Notes = append(report.Notes, fmt.Sprintf("note: %s is alive, but no listening port or confirmation was found in logs; startup is not confirmed.", compName))
+							stepStartedNotConfirmed = true
+						}
 					}
 				} else {
 					// One-shot portless executable: if it already completed, check if it exited cleanly with code 0.
@@ -561,6 +725,7 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 							continue
 						}
 					}
+					stepVerified = true
 				}
 				if !cleanExited {
 					if la, ok := process.(interface{ IsAlive() bool }); !ok || la.IsAlive() {
@@ -575,6 +740,7 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 							Component: attempt.Component,
 							PID:       pid,
 							Port:      port,
+							Verified:  stepVerified,
 						})
 					}
 				}
@@ -611,10 +777,18 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 				ownedServicesMap[composeSvc] = struct{}{}
 				report.OwnedServices = append(report.OwnedServices, composeSvc)
 			}
-			result.Status = StepSucceeded
+			if stepStartedNotConfirmed {
+				result.Status = StepStartedNotConfirmed
+			} else {
+				result.Status = StepSucceeded
+			}
 			for i := len(report.Decisions) - 1; i >= 0; i-- {
 				if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
-					report.Decisions[i].Outcome = "succeeded"
+					if stepStartedNotConfirmed {
+						report.Decisions[i].Outcome = "started, not confirmed"
+					} else {
+						report.Decisions[i].Outcome = "succeeded"
+					}
 					break
 				}
 			}
@@ -642,8 +816,63 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 	}
 
 	// Verified-startup checkpoint:
-	// Every planned startup/setup step and all deterministic verification checks have passed.
-	report.VerifiedStartup = true
+	var verifiedComponents []string
+	var unconfirmedComponents []string
+	seenVerified := make(map[string]bool)
+	seenUnconfirmed := make(map[string]bool)
+
+	for _, proc := range report.ActiveProcesses {
+		comp := proc.Component
+		if comp == "" {
+			comp = proc.StepID
+		}
+		if proc.Verified {
+			if !seenVerified[comp] {
+				seenVerified[comp] = true
+				verifiedComponents = append(verifiedComponents, comp)
+			}
+		} else {
+			if !seenUnconfirmed[comp] {
+				seenUnconfirmed[comp] = true
+				unconfirmedComponents = append(unconfirmedComponents, comp)
+			}
+		}
+	}
+	for _, stepRes := range report.Steps {
+		if stepRes.Status == StepStartedNotConfirmed {
+			stepComp := stepRes.ID
+			for _, ps := range plan.Steps {
+				if ps.ID == stepRes.ID && ps.Component != "" {
+					stepComp = ps.Component
+					break
+				}
+			}
+			if !seenUnconfirmed[stepComp] {
+				seenUnconfirmed[stepComp] = true
+				unconfirmedComponents = append(unconfirmedComponents, stepComp)
+			}
+		}
+	}
+
+	sort.Strings(verifiedComponents)
+	sort.Strings(unconfirmedComponents)
+
+	if len(unconfirmedComponents) > 0 {
+		report.VerifiedStartup = false
+		if len(verifiedComponents) > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("note: partially verified: verified component(s): [%s]; unconfirmed component(s): [%s]; repository startup is not fully verified.",
+				strings.Join(verifiedComponents, ", "),
+				strings.Join(unconfirmedComponents, ", ")))
+		} else {
+			report.Notes = append(report.Notes, fmt.Sprintf("note: repository startup is not confirmed; unconfirmed component(s): [%s].",
+				strings.Join(unconfirmedComponents, ", ")))
+		}
+	} else {
+		report.VerifiedStartup = true
+		if len(verifiedComponents) > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("note: verified component(s): [%s].", strings.Join(verifiedComponents, ", ")))
+		}
+	}
 
 	if opts.OnVerifiedStartup != nil {
 		checkpointReport := report
