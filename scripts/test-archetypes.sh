@@ -73,8 +73,20 @@ for REPO_PATH in "${REPOS[@]}"; do
   CONF_PCT=$(awk -v c="$CONF_RAW" 'BEGIN { printf "%.0f%%", c*100 }' 2>/dev/null || echo "100%")
 
   # 2. Plan execution
-  PLAN_JSON=$("$OCTO_BIN" plan --json "$REPO_PATH" 2>/dev/null || true)
-  STEP_COUNT=$(echo "$PLAN_JSON" | grep -o '"id":' | wc -l | tr -d ' ' || echo "0")
+  PLAN_TARGET="$REPO_PATH"
+  PLAN_JSON=$("$OCTO_BIN" plan --json "$PLAN_TARGET" 2>/dev/null || true)
+  if [ -z "$PLAN_JSON" ]; then
+    # In monorepos with multiple runnable targets, test the first runnable subproject
+    SUB_DIR=$(find "$REPO_PATH" -mindepth 1 -maxdepth 2 -type d \( -name .git -prune \) -o -type d -exec test -f "{}/go.mod" -o -f "{}/package.json" \; -print 2>/dev/null | sort | head -1 || true)
+    if [ -n "$SUB_DIR" ] && [ -d "$SUB_DIR" ]; then
+      PLAN_TARGET="$SUB_DIR"
+      PLAN_JSON=$("$OCTO_BIN" plan --json "$PLAN_TARGET" 2>/dev/null || true)
+    fi
+  fi
+
+  STEP_COUNT=$(echo "$PLAN_JSON" | grep -c '"id":' 2>/dev/null || true)
+  STEP_COUNT="${STEP_COUNT:-0}"
+  STEP_COUNT=$(echo "$STEP_COUNT" | tr -d '[:space:]')
   
   if [ "$STEP_COUNT" -eq 0 ]; then
     printf "%-30s | %-12s | %-12s | %-6s | %-6s | ${RED}%-8s${RESET}\n" "$REPO_NAME" "$LANG" "$FRAMEWORK" "0" "$CONF_PCT" "FAIL (plan)"
@@ -84,7 +96,7 @@ for REPO_PATH in "${REPOS[@]}"; do
 
   # 3. Preview machine impact
   PREVIEW_ERR=0
-  "$OCTO_BIN" preview "$REPO_PATH" >/dev/null 2>&1 || PREVIEW_ERR=1
+  "$OCTO_BIN" preview "$PLAN_TARGET" >/dev/null 2>&1 || PREVIEW_ERR=1
   if [ "$PREVIEW_ERR" -ne 0 ]; then
     printf "%-30s | %-12s | %-12s | %-6s | %-6s | ${RED}%-8s${RESET}\n" "$REPO_NAME" "$LANG" "$FRAMEWORK" "$STEP_COUNT" "$CONF_PCT" "FAIL (preview)"
     ((FAILED++))
@@ -92,7 +104,7 @@ for REPO_PATH in "${REPOS[@]}"; do
   fi
 
   # 4. Environment analysis
-  "$OCTO_BIN" env "$REPO_PATH" >/dev/null 2>&1 || true
+  "$OCTO_BIN" env "$PLAN_TARGET" >/dev/null 2>&1 || true
 
   printf "%-30s | %-12s | %-12s | %-6s | %-6s | ${GREEN}%-8s${RESET}\n" "$REPO_NAME" "$LANG" "$FRAMEWORK" "$STEP_COUNT" "$CONF_PCT" "PASS"
   ((PASSED++))

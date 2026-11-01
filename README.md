@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Make “how do I run this?” disappear.</strong><br>
-  Zero-configuration execution intelligence for human developers and autonomous AI agents.
+  The zero-configuration execution engine for human developers, open-source repositories, and autonomous AI agents.
 </p>
 
 <p align="center">
@@ -24,12 +24,18 @@
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#using-octo-as-an-mcp-server-cursor--claude-code--windsurf">MCP Server</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
+  <a href="#zero-config-ci-smoke-gate-github-actions">CI Smoke Gate</a>
+  <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#why-octo">Why Octo?</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#supported-ecosystems--capabilities">Ecosystems</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="#documentation--architecture">Documentation</a>
 </p>
+
+---
+
+> **Octo** turns any repository into an instantly executable, self-verifying stack. Clone any repository, run `octo run`, and Octo automatically discovers languages, frameworks, package managers, and backing services, allocates non-colliding ports, binds required environment templates, and verifies runtime health—without manual setup or trial-and-error shell guessing.
 
 ---
 
@@ -81,17 +87,22 @@ Precompiled standalone archives and `checksums.txt` are available on the [GitHub
 
 ## 30-Second Quickstart
 
+Get from fresh checkout to verified running stack in four commands:
+
 ```bash
 cd your-project
 
 # 1. Inspect: Discover repository facts, language, framework & package manager
 octo inspect   # or: octo ins
 
-# 2. Preview: Inspect port allocations, dependencies & machine changes before running
-octo preview   # or: octo prev
+# 2. Plan: Inspect deterministic execution order, port bindings & machine impact
+octo plan      # or: octo p
 
 # 3. Run: Execute in dependency order, verify runtime health, and teardown cleanly on Ctrl+C
 octo run       # or: octo r
+
+# 4. Verify: Run health checks, validate ports, and inspect strategy cache (.octo.lock)
+octo verify    # or: octo v
 ```
 
 ### Quick Command & Flag Shortcuts
@@ -184,6 +195,53 @@ claude mcp add octo -- octo mcp
 
 ---
 
+<a id="zero-config-ci-smoke-gate-github-actions"></a>
+## Zero-Config CI Smoke Gate (GitHub Actions)
+
+Any open-source repository can use Octo-CLI as an automated, zero-configuration smoke gate in GitHub Actions. Octo evaluates repository integrity, validates execution plans, and tests live runtime health without maintaining fragile custom shell scripts.
+
+### Quick GitHub Actions Workflow (`.github/workflows/smoke-gate.yml`)
+
+```yaml
+name: CI Smoke Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-gate:
+    name: Octo Smoke Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Octo CLI
+        run: curl -fsSL https://raw.githubusercontent.com/Octo-sh/Octo-CLI/main/install.sh | sh
+
+      - name: Inspect Stack & Validate Plan
+        run: |
+          octo inspect
+          octo plan
+
+      - name: Smoke Run & Verify Stack
+        run: |
+          octo run --detach
+          octo verify --json
+```
+
+For strict enforcement of verified `.octo.lock` candidate fingerprints in production or release workflows:
+```bash
+octo verify --strict
+```
+
+See **[docs/CI_GATE.md](docs/CI_GATE.md)** for advanced matrix configurations, container sandboxing, and PR status reporting.
+
+---
+
 ## Why Octo?
 
 | Feature | Octo CLI | Raw Shell Scripts | Docker Compose Alone | LLM Bash Agents |
@@ -217,8 +275,9 @@ claude mcp add octo -- octo mcp
 Deep-dive documentation and formal specifications live in dedicated guides:
 
 - **[Architecture Deep-Dive](Architecture.md)** — Detailed specification of the canonical execution pipeline, bounded decision engine, topology graph, and runtime adapters.
+- **[Zero-Config CI Gate](docs/CI_GATE.md)** — Using Octo as an automated smoke gate in GitHub Actions.
+- **[Specification Contract & Schema](spec/v1/specification.md)** — Formal behavioral contract, [JSON Schema](spec/v1/schema.json), and declarative `.octo.yaml` models.
 - **[Vision & Core Principles](docs/VISION.md)** — The foundational philosophy: *Evidence before inference, candidates before decisions*.
-- **[Specification Contract](spec/v1/specification.md)** — Formal behavioral contract, candidate schemas, and JSON models.
 - **[Benchmark Results](docs/BENCHMARK.md)** — Detection speed and execution startup benchmarks across archetypes.
 - **[Project Roadmap](docs/ROADMAP.md)** — Phased milestones, plugin ecosystems, and future adapter targets.
 - **[Community & Mentorship](docs/COMMUNITY_AND_MENTORSHIP.md)** — Guidelines for community engagement and contributor onboarding.

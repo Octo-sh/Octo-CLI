@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://octo.sh/schemas/v1/schema.json",
+  "title": "Octo Configuration Schema v1",
+  "description": "JSON Schema for Octo declarative repository configuration (.octo.yaml, .octo.yml, octo.dev/v1).",
+  "type": "object",
+  "properties": {
+    "spec": {
+      "type": "string",
+      "description": "Specification version identifier (e.g. 'octo.dev/v1').",
+      "enum": ["octo.dev/v1", "v1"]
+    },
+    "project": {
+      "type": "object",
+      "description": "Project-level metadata.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Canonical project name."
+        }
+      },
+      "additionalProperties": false
+    },
+    "components": {
+      "type": "object",
+      "description": "Map of named source-code application components or libraries.",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Declared component configuration and execution strategy.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Role of the component.",
+            "enum": ["application", "library", "worker", "job"]
+          },
+          "source": {
+            "type": "object",
+            "description": "Source directory location.",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Relative directory path to component root."
+              }
+            },
+            "additionalProperties": false
+          },
+          "runtime": {
+            "type": "object",
+            "description": "Runtime language and version requirements.",
+            "properties": {
+              "language": {
+                "type": "string",
+                "description": "Target language or runtime environment (e.g. node, python, go, rust, java)."
+              },
+              "version": {
+                "type": "string",
+                "description": "Required runtime version constraint (e.g. '22', '3.12', '1.24')."
+              }
+            },
+            "additionalProperties": false
+          },
+          "command": {
+            "type": "object",
+            "description": "Lifecycle commands for the component.",
+            "properties": {
+              "dev": {
+                "type": "string",
+                "description": "Development start command."
+              },
+              "start": {
+                "type": "string",
+                "description": "Production or release start command."
+              }
+            },
+            "additionalProperties": false
+          },
+          "run_command": {
+            "type": "string",
+            "description": "Direct execution command override."
+          },
+          "port": {
+            "type": "integer",
+            "description": "Primary listening TCP port for local development.",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "ports": {
+            "type": "array",
+            "description": "Listening TCP ports required by this component.",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "env": {
+            "type": "object",
+            "description": "Static environment variables scoped to this component.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "description": "Components or services that must be running/ready before this component starts.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "services": {
+      "type": "object",
+      "description": "Map of backing infrastructure services (databases, caches, queues).",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Declared backing service configuration.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Category of backing service.",
+            "enum": ["database", "cache", "queue", "service", "infrastructure"]
+          },
+          "image": {
+            "type": "string",
+            "description": "Container image reference (e.g. 'postgres:17', 'redis:7-alpine')."
+          },
+          "ports": {
+            "type": "array",
+            "description": "Container port mappings (e.g. ['5432:5432']).",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "description": "Service dependencies.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "Declared environment requirements and secret definitions.",
+      "properties": {
+        "required": {
+          "type": "object",
+          "description": "Required environment variables without which the repository cannot execute.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "secret": {
+                "type": "boolean",
+                "description": "Whether this variable contains sensitive credentials or secret keys."
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of the purpose and expected format."
+              },
+              "default": {
+                "type": "string",
+                "description": "Safe, non-sensitive default value if applicable."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "optional": {
+          "type": "object",
+          "description": "Optional environment variables supported by the repository.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "secret": {
+                "type": "boolean",
+                "description": "Whether this variable contains sensitive credentials."
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of the purpose."
+              },
+              "default": {
+                "type": "string",
+                "description": "Default value if not provided."
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "array",
+      "description": "Deterministic post-execution verification checks (HTTP endpoints, TCP listeners).",
+      "items": {
+        "type": "object",
+        "required": ["component"],
+        "properties": {
+          "component": {
+            "type": "string",
+            "description": "Target component or service to verify."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Verification probe kind.",
+            "enum": ["http", "port", "tcp", "health"]
+          },
+          "path": {
+            "type": "string",
+            "description": "HTTP request path (e.g. '/healthz' or '/ready')."
+          },
+          "port": {
+            "type": "integer",
+            "description": "Target port to probe (defaults to component resolved port).",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "expected_status": {
+            "type": "integer",
+            "description": "Expected HTTP status code (defaults to 200).",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "command": {
+            "type": "string",
+            "description": "Healthcheck command probe."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
+
