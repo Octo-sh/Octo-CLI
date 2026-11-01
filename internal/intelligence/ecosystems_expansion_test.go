@@ -137,3 +137,165 @@ func TestDetectAndCandidateKotlin(t *testing.T) {
 		t.Fatalf("expected ./gradlew bootRun in plan, got: %+v", plan.Steps)
 	}
 }
+
+func TestDeclarativeEcosystemRegistration(t *testing.T) {
+	RegisterEcosystem(EcosystemSpec{
+		Name:                  "Dart",
+		Files:                 []string{"pubspec.yaml"},
+		DefaultPackageManager: "dart",
+		DefaultPort:           8080,
+		DefaultStartCommand:   "dart run",
+		CandidateRules: []CandidateRule{
+			{
+				ID:            "dart.run",
+				Command:       "dart run",
+				Confidence:    0.95,
+				FileIndicator: "pubspec.yaml",
+				Detail:        "Dart standard application runner",
+			},
+		},
+	})
+
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "pubspec.yaml"), []byte("name: my_app\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	detected, err := detectProject(tmp)
+	if err != nil {
+		t.Fatalf("detectProject failed: %v", err)
+	}
+	if detected.Language != "Dart" {
+		t.Fatalf("expected language Dart, got %q", detected.Language)
+	}
+	if detected.PackageManager != "dart" {
+		t.Fatalf("expected package manager dart, got %q", detected.PackageManager)
+	}
+
+	model, err := Analyze(tmp)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if model.Language != "Dart" {
+		t.Fatalf("model language = %q, want Dart", model.Language)
+	}
+
+	planner := DeterministicPlanner{DecisionProvider: DeterministicDecisionProvider{}}
+	plan, err := planner.Plan(context.Background(), model)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	foundRun := false
+	for _, step := range plan.Steps {
+		if step.Phase == PhaseStart && step.Command == "dart run" {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		t.Fatalf("expected dart run in plan, got: %+v", plan.Steps)
+	}
+}
+
+func TestDeclarativeFrameworkDetection(t *testing.T) {
+	RegisterEcosystem(EcosystemSpec{
+		Name:                  "Dart",
+		Files:                 []string{"pubspec.yaml"},
+		DefaultPackageManager: "dart",
+		DefaultPort:           8080,
+		DefaultStartCommand:   "dart run",
+	})
+
+	err := RegisterFramework("Dart", FrameworkRule{
+		Name:               "Shelf",
+		DependencyPatterns: []string{"shelf"},
+		DefaultPort:        8080,
+		RunCommand:         "dart run bin/server.dart",
+		CandidateID:        "dart.shelf.server",
+		Confidence:         0.96,
+	})
+	if err != nil {
+		t.Fatalf("RegisterFramework failed: %v", err)
+	}
+
+	tmp := t.TempDir()
+	content := "name: my_shelf_app\ndependencies:\n  shelf: ^1.4.0\n"
+	if err := os.WriteFile(filepath.Join(tmp, "pubspec.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model, err := Analyze(tmp)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if model.Framework != "Shelf" {
+		t.Fatalf("expected framework Shelf, got %q", model.Framework)
+	}
+
+	planner := DeterministicPlanner{DecisionProvider: DeterministicDecisionProvider{}}
+	plan, err := planner.Plan(context.Background(), model)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	foundRun := false
+	for _, step := range plan.Steps {
+		if step.Phase == PhaseStart && step.Command == "dart run bin/server.dart" {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		t.Fatalf("expected dart run bin/server.dart in plan, got: %+v", plan.Steps)
+	}
+}
+
+func TestDeclarativeEcosystemMonorepoDiscovery(t *testing.T) {
+	RegisterEcosystem(EcosystemSpec{
+		Name:                  "Dart",
+		Files:                 []string{"pubspec.yaml"},
+		DefaultPackageManager: "dart",
+		DefaultPort:           8080,
+		DefaultStartCommand:   "dart run",
+	})
+
+	root := t.TempDir()
+	clientDir := filepath.Join(root, "client")
+	serverDir := filepath.Join(root, "server")
+	if err := os.MkdirAll(clientDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(serverDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(clientDir, "package.json"), []byte(`{"name":"client","scripts":{"start":"react-scripts start"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "pubspec.yaml"), []byte("name: server\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model, err := Analyze(root)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if !model.Monorepo {
+		t.Fatal("expected multi-component repository to be marked Monorepo")
+	}
+	if len(model.Components) != 2 {
+		t.Fatalf("expected 2 components, got %d", len(model.Components))
+	}
+
+	dartComp := findComponent(model.Components, "server")
+	if dartComp == nil {
+		t.Fatal("server component not found")
+	}
+	if dartComp.Language != "Dart" {
+		t.Fatalf("expected Dart language, got %q", dartComp.Language)
+	}
+	if dartComp.PackageManager != "dart" {
+		t.Fatalf("expected dart package manager, got %q", dartComp.PackageManager)
+	}
+}

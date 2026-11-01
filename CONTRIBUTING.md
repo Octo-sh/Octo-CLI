@@ -22,45 +22,101 @@ Every contribution must preserve Octo's core execution philosophy:
 
 ## The Contributor Recipe: Adding a New Ecosystem
 
-To add support for a new language, framework, or runtime, contributors work against small, isolated interfaces without modifying core graph traversal or planning algorithms.
+Octo provides a clean, declarative **Ecosystem Registry** in `internal/intelligence/ecosystems.go`. Contributors can add support for a new language, framework, or runtime with an isolated, ~10-line declarative definition without modifying core detection control flow, graph traversal, or planning algorithms.
 
-### Step 1: Register Project Signals & Detectors
-In `internal/intelligence/detector.go`, register your ecosystem manifest:
+### Step 1: Declare the Ecosystem Specification
+
+Add a self-contained definition to `builtInEcosystems` in `internal/intelligence/ecosystems.go` (or call `RegisterEcosystem`):
+
 ```go
-// Register file marker and detection function
-RegisterProjectSignal(SignalDefinition{
-    File:     "pubspec.yaml",
-    Language: "Dart",
-    Detect:   detectDartProject,
+RegisterEcosystem(EcosystemSpec{
+    Name:                  "Dart",
+    Files:                 []string{"pubspec.yaml"},
+    DefaultPackageManager: "dart",
+    DefaultPort:           8080,
+    DefaultStartCommand:   "dart run",
+    SetupCommand:          "dart pub get",
+    SetupRequired:         true,
 })
 ```
 
-### Step 2: Implement Candidate Provider
-In `internal/intelligence/candidates.go` (or an ecosystem-specific file), implement `CandidateProvider`:
-```go
-type DartExecutionCandidateProvider struct{}
+Registering an `EcosystemSpec` automatically:
+- Registers file signal markers with `ProjectDetectorRegistry`.
+- Binds candidate generation with `CandidateProviderRegistry`.
+- Enables monorepo and multi-component fallback discovery.
+- Sets default ports, setup commands, and package managers.
 
-func (DartExecutionCandidateProvider) Name() string { return "dart" }
-func (DartExecutionCandidateProvider) Supports(comp Component) bool {
-    return strings.EqualFold(comp.Language, "dart")
-}
-func (DartExecutionCandidateProvider) Candidates(ctx context.Context, root string, comp Component) ([]ExecutionCandidate, error) {
-    // Return bounded, confidence-scored execution candidates backed by evidence
+#### Adding Framework Rules (Optional)
+If your ecosystem has popular frameworks (like Phoenix for Elixir, Laravel for PHP, or Shelf for Dart), declare them inside `Frameworks`:
+
+```go
+RegisterFramework("Dart", FrameworkRule{
+    Name:               "Shelf",
+    DependencyPatterns: []string{"shelf"},
+    DefaultPort:        8080,
+    RunCommand:         "dart run bin/server.dart",
+    CandidateID:        "dart.shelf.server",
+    Confidence:         0.96,
+})
+```
+
+### Step 2: Write Hermetic Unit Tests in `ecosystems_expansion_test.go`
+
+Add a table-driven or temp-dir unit test in `internal/intelligence/ecosystems_expansion_test.go`:
+
+```go
+func TestDetectAndCandidateDart(t *testing.T) {
+    tmp := t.TempDir()
+    if err := os.WriteFile(filepath.Join(tmp, "pubspec.yaml"), []byte("name: my_app\n"), 0644); err != nil {
+        t.Fatal(err)
+    }
+
+    detected, err := detectProject(tmp)
+    if err != nil || detected.Language != "Dart" {
+        t.Fatalf("expected language Dart, got %q (err: %v)", detected.Language, err)
+    }
+
+    model, err := Analyze(tmp)
+    if err != nil || model.Language != "Dart" {
+        t.Fatalf("expected model language Dart, got %q (err: %v)", model.Language, err)
+    }
+
+    planner := DeterministicPlanner{DecisionProvider: DeterministicDecisionProvider{}}
+    plan, err := planner.Plan(context.Background(), model)
+    if err != nil {
+        t.Fatalf("Plan failed: %v", err)
+    }
+
+    foundRun := false
+    for _, step := range plan.Steps {
+        if step.Phase == PhaseStart && step.Command == "dart run" {
+            foundRun = true
+            break
+        }
+    }
+    if !foundRun {
+        t.Fatalf("expected 'dart run' step in plan, got: %+v", plan.Steps)
+    }
 }
 ```
-Register it via:
+
+### Step 3: Custom Detectors or Providers (Advanced)
+For complex language manifests requiring bespoke parsing (e.g. Go module paths, Node engines version constraints, Python virtualenv resolution), assign `Detect` or `CandidateProvider` on the `EcosystemSpec`:
+
 ```go
-RegisterCandidateProvider(DartExecutionCandidateProvider{})
+EcosystemSpec{
+    Name:              "CustomLang",
+    Files:             []string{"custom.manifest"},
+    Detect:            detectCustomProject,
+    CandidateProvider: CustomCandidateProvider{},
+}
 ```
 
-### Step 3: Implement Verification (if custom protocol needed)
-If the ecosystem requires specific health checking (e.g. custom HTTP endpoint, socket probe):
+### Step 4: Verification (if custom health probe protocol needed)
+If the ecosystem requires specialized health checking (e.g. custom protocol probe):
 ```go
 RegisterVerificationProvider(&CustomVerificationProvider{})
 ```
-
-### Step 4: Write Hermetic Regression Tests
-Add table-driven unit tests in `internal/intelligence/` using `t.TempDir()`. Ensure tests run in milliseconds with 0 external network dependencies.
 
 ---
 

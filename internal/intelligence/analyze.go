@@ -164,7 +164,32 @@ func signalFile(root, lang string) string {
     return ""
   }
   files:=map[string]string{"Node":"package.json","Java":"pom.xml","Python":"pyproject.toml","Go":"go.mod","Rust":"Cargo.toml","Ruby":"Gemfile","PHP":"composer.json","Elixir":"mix.exs"}
-  f:=files[lang]; if f=="" { return "" }; if _,e:=os.Stat(filepath.Join(root,f)); e!=nil{return ""}; return f
+  f:=files[lang]
+  if f != "" {
+    if _, e := os.Stat(filepath.Join(root, f)); e == nil {
+      return f
+    }
+  }
+  if eco, ok := DefaultEcosystemRegistry().FindEcosystem(lang); ok {
+    for _, f := range eco.Files {
+      if _, e := os.Stat(filepath.Join(root, f)); e == nil {
+        return f
+      }
+    }
+    for _, pat := range eco.FilePatterns {
+      entries, err := os.ReadDir(root)
+      if err == nil {
+        for _, entry := range entries {
+          if !entry.IsDir() {
+            if matched, _ := filepath.Match(pat, entry.Name()); matched {
+              return entry.Name()
+            }
+          }
+        }
+      }
+    }
+  }
+  return ""
 }
 func lockfile(root, pm string) string {
   files:=map[string]string{
@@ -178,7 +203,26 @@ func lockfile(root, pm string) string {
     "composer":"composer.lock",
     "mix":"mix.lock",
   }
-  f:=files[pm]; if f=="" {return ""}; if _,e:=os.Stat(filepath.Join(root,f));e!=nil{return ""};return f
+  f:=files[pm]
+  if f != "" {
+    if _, e := os.Stat(filepath.Join(root, f)); e == nil {
+      return f
+    }
+  }
+  for _, eco := range DefaultEcosystemRegistry().Ecosystems() {
+    for _, h := range eco.PackageManagers {
+      if strings.EqualFold(h.Manager, pm) {
+        target := h.File
+        if h.Lockfile != "" {
+          target = h.Lockfile
+        }
+        if _, e := os.Stat(filepath.Join(root, target)); e == nil {
+          return target
+        }
+      }
+    }
+  }
+  return ""
 }
 func monorepoMarker(root string) string {
   for _,f:=range []string{"pnpm-workspace.yaml","nx.json","turbo.json","lerna.json","rush.json","go.work"} {
@@ -220,6 +264,33 @@ func detectFramework(root, lang string) string {
       if strings.Contains(s, "fastapi") { return "FastAPI" }
       if strings.Contains(s, "django") { return "Django" }
       if strings.Contains(s, "flask") { return "Flask" }
+    }
+  }
+
+  // Check declarative ecosystem registry for registered frameworks
+  if eco, ok := DefaultEcosystemRegistry().FindEcosystem(lang); ok {
+    for _, fw := range eco.Frameworks {
+      for _, ind := range fw.Indicators {
+        if _, err := os.Stat(filepath.Join(root, ind)); err == nil {
+          return fw.Name
+        }
+      }
+      manifests := fw.ManifestFiles
+      if len(manifests) == 0 {
+        manifests = eco.Files
+      }
+      for _, mf := range manifests {
+        data, err := os.ReadFile(filepath.Join(root, mf))
+        if err != nil {
+          continue
+        }
+        content := strings.ToLower(string(data))
+        for _, pat := range fw.DependencyPatterns {
+          if strings.Contains(content, strings.ToLower(pat)) {
+            return fw.Name
+          }
+        }
+      }
     }
   }
   return ""
