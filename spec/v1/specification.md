@@ -46,7 +46,7 @@ The Project Model is the canonical internal representation. `.octo.yaml` is a se
         DATABASE_URL:
           secret: true
 
-This is a design contract, not a claim that the complete v1 schema is implemented.
+The formal machine-validatable schema for this specification is defined in [`schema.json`](schema.json) and validated continuously against repository Go structs and example declarations.
 
 ## Decision Architecture
 

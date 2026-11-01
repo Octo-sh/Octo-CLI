@@ -16,6 +16,7 @@ type RepositoryOverride struct {
 	Project      OverrideProject              `json:"project,omitempty" yaml:"project,omitempty"`
 	Components   map[string]OverrideComponent `json:"components,omitempty" yaml:"components,omitempty"`
 	Services     map[string]OverrideService   `json:"services,omitempty" yaml:"services,omitempty"`
+	Environment  OverrideEnvironment          `json:"environment,omitempty" yaml:"environment,omitempty"`
 	Verification []OverrideVerificationCheck  `json:"verification,omitempty" yaml:"verification,omitempty"`
 }
 
@@ -23,7 +24,19 @@ type OverrideProject struct {
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 }
 
+type OverrideSource struct {
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+}
+
+type OverrideRuntime struct {
+	Language string `json:"language,omitempty" yaml:"language,omitempty"`
+	Version  string `json:"version,omitempty" yaml:"version,omitempty"`
+}
+
 type OverrideComponent struct {
+	Type        string            `json:"type,omitempty" yaml:"type,omitempty"`
+	Source      OverrideSource    `json:"source,omitempty" yaml:"source,omitempty"`
+	Runtime     OverrideRuntime   `json:"runtime,omitempty" yaml:"runtime,omitempty"`
 	Command     OverrideCommand   `json:"command,omitempty" yaml:"command,omitempty"`
 	RunCommand  string            `json:"run_command,omitempty" yaml:"run_command,omitempty"`
 	Port        int               `json:"port,omitempty" yaml:"port,omitempty"`
@@ -38,9 +51,21 @@ type OverrideCommand struct {
 }
 
 type OverrideService struct {
+	Type      string   `json:"type,omitempty" yaml:"type,omitempty"`
 	Image     string   `json:"image,omitempty" yaml:"image,omitempty"`
 	Ports     []string `json:"ports,omitempty" yaml:"ports,omitempty"`
 	DependsOn []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+}
+
+type OverrideEnvironment struct {
+	Required map[string]OverrideEnvVar `json:"required,omitempty" yaml:"required,omitempty"`
+	Optional map[string]OverrideEnvVar `json:"optional,omitempty" yaml:"optional,omitempty"`
+}
+
+type OverrideEnvVar struct {
+	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 type OverrideVerificationCheck struct {
@@ -146,6 +171,15 @@ func ApplyRepositoryOverrides(model *ProjectModel, override *RepositoryOverride,
 
 		if foundIdx >= 0 {
 			comp := &model.Components[foundIdx]
+			if compOverride.Source.Path != "" {
+				comp.Path = compOverride.Source.Path
+			}
+			if compOverride.Runtime.Language != "" {
+				comp.Language = compOverride.Runtime.Language
+			}
+			if compOverride.Type != "" {
+				comp.Role = compOverride.Type
+			}
 			if cmd != "" {
 				candidate := ExecutionCandidate{
 					Kind:       "application",
@@ -156,7 +190,11 @@ func ApplyRepositoryOverrides(model *ProjectModel, override *RepositoryOverride,
 				}
 				comp.ExecutionCandidates = append([]ExecutionCandidate{candidate}, comp.ExecutionCandidates...)
 				comp.RunCommand = cmd
-				comp.Role = "application"
+				if compOverride.Type != "" {
+					comp.Role = compOverride.Type
+				} else {
+					comp.Role = "application"
+				}
 				comp.NonRunnableReason = ""
 				comp.Confidence = 1.0
 			}
@@ -170,14 +208,23 @@ func ApplyRepositoryOverrides(model *ProjectModel, override *RepositoryOverride,
 			comp.Evidence = append(comp.Evidence, overrideEvidence)
 		} else {
 			// New declared component from override
-			role := "application"
-			if cmd == "" {
-				role = "library"
+			role := compOverride.Type
+			if role == "" {
+				if cmd == "" {
+					role = "library"
+				} else {
+					role = "application"
+				}
+			}
+			compPath := compOverride.Source.Path
+			if compPath == "" {
+				compPath = "."
 			}
 			newComp := Component{
 				Name:        compName,
 				Role:        role,
-				Path:        ".",
+				Path:        compPath,
+				Language:    compOverride.Runtime.Language,
 				RunCommand:  cmd,
 				Port:        port,
 				PortStrict:  port > 0,
@@ -265,5 +312,40 @@ func ApplyRepositoryOverrides(model *ProjectModel, override *RepositoryOverride,
 			Command:        v.Command,
 			Timeout:        5 * time.Second,
 		})
+	}
+
+	// 4. Environment Overrides
+	for varName := range override.Environment.Required {
+		found := false
+		for i := range model.Environment.Variables {
+			if model.Environment.Variables[i].Name == varName {
+				model.Environment.Variables[i].Required = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			model.Environment.Variables = append(model.Environment.Variables, EnvironmentVariable{
+				Name:     varName,
+				Required: true,
+				Sources:  []string{relConfigPath},
+			})
+		}
+	}
+	for varName := range override.Environment.Optional {
+		found := false
+		for i := range model.Environment.Variables {
+			if model.Environment.Variables[i].Name == varName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			model.Environment.Variables = append(model.Environment.Variables, EnvironmentVariable{
+				Name:     varName,
+				Required: false,
+				Sources:  []string{relConfigPath},
+			})
+		}
 	}
 }
