@@ -106,7 +106,7 @@ func TestServerToolsList(t *testing.T) {
 		toolMap[tool.Name] = true
 	}
 
-	for _, expected := range []string{"octo_inspect", "octo_topology", "octo_plan", "octo_run_and_verify", "octo_verify", "octo_diagnose", "octo_env", "octo_preview", "octo_benchmark"} {
+	for _, expected := range []string{"octo_inspect", "octo_topology", "octo_plan", "octo_run_and_verify", "octo_verify", "octo_diagnose", "octo_env", "octo_env_check", "octo_preview", "octo_benchmark"} {
 		if !toolMap[expected] {
 			t.Fatalf("missing expected tool: %s", expected)
 		}
@@ -116,6 +116,14 @@ func TestServerToolsList(t *testing.T) {
 		if tool.Name == "octo_run_and_verify" {
 			if _, ok := tool.InputSchema.Properties["sandbox"]; !ok {
 				t.Fatal("expected 'sandbox' property in octo_run_and_verify input schema")
+			}
+			if _, ok := tool.InputSchema.Properties["timeout"]; !ok {
+				t.Fatal("expected 'timeout' property in octo_run_and_verify input schema")
+			}
+		}
+		if tool.Name == "octo_verify" {
+			if _, ok := tool.InputSchema.Properties["timeout"]; !ok {
+				t.Fatal("expected 'timeout' property in octo_verify input schema")
 			}
 		}
 	}
@@ -803,5 +811,291 @@ func TestServerTargetSelection_PlanAndRun(t *testing.T) {
 	}
 	if !strings.Contains(allRes.Content[0].Text, "frontend") || !strings.Contains(allRes.Content[0].Text, "server") {
 		t.Fatalf("expected plan to contain both components, got: %s", allRes.Content[0].Text)
+	}
+}
+
+func TestServerEnvCheckAndResource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/envtest\ngo 1.24\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Add critical secret requirement (DATABASE_URL, SECRET_KEY)
+	mainSrc := `package main
+import "os"
+func main() {
+	_ = os.Getenv("DATABASE_URL")
+	_ = os.Getenv("SECRET_KEY")
+	_ = os.Getenv("FEATURE_FLAG")
+}
+`
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(mainSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewServer()
+
+	// 1. Call octo_env_check
+	envReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "octo_env_check",
+			"arguments": map[string]interface{}{
+				"path": root,
+			},
+		},
+	}
+	data, _ := json.Marshal(envReq)
+	in := strings.NewReader(string(data) + "\n")
+	var out bytes.Buffer
+
+	if err := s.Serve(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+
+	resData, _ := json.Marshal(resp.Result)
+	var toolRes CallToolResult
+	_ = json.Unmarshal(resData, &toolRes)
+	if toolRes.IsError || len(toolRes.Content) == 0 {
+		t.Fatalf("unexpected tool result: %#v", toolRes)
+	}
+
+	var checkRes EnvCheckResult
+	if err := json.Unmarshal([]byte(toolRes.Content[0].Text), &checkRes); err != nil {
+		t.Fatalf("failed to parse EnvCheckResult: %v", err)
+	}
+
+	if len(checkRes.CriticalMissing) == 0 {
+		t.Fatal("expected CriticalMissing to contain detected secrets")
+	}
+	hasDB := false
+	for _, k := range checkRes.CriticalMissing {
+		if k == "DATABASE_URL" {
+			hasDB = true
+		}
+	}
+	if !hasDB {
+		t.Fatalf("expected CriticalMissing to contain DATABASE_URL, got: %v", checkRes.CriticalMissing)
+	}
+	if !strings.Contains(checkRes.Template, "DATABASE_URL") {
+		t.Fatalf("expected template to contain DATABASE_URL, got: %s", checkRes.Template)
+	}
+
+	// 2. Read octo://env resource
+	readReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      101,
+		"method":  "resources/read",
+		"params": map[string]interface{}{
+			"uri": "octo://env?path=" + root,
+		},
+	}
+	readData, _ := json.Marshal(readReq)
+	in = strings.NewReader(string(readData) + "\n")
+	out.Reset()
+	if err := s.Serve(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var readResp Response
+	if err := json.Unmarshal(out.Bytes(), &readResp); err != nil {
+		t.Fatal(err)
+	}
+	if readResp.Error != nil {
+		t.Fatalf("read env error: %v", readResp.Error)
+	}
+	dataRead, _ := json.Marshal(readResp.Result)
+	var resResult ReadResourceResult
+	_ = json.Unmarshal(dataRead, &resResult)
+	if len(resResult.Contents) == 0 || !strings.Contains(resResult.Contents[0].Text, "DATABASE_URL") {
+		t.Fatalf("expected resource content with DATABASE_URL: %#v", resResult)
+	}
+}
+
+func TestServerPlanIncludesDecisionTrace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/plantest\ngo 1.24\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewServer()
+
+	planReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      102,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "octo_plan",
+			"arguments": map[string]interface{}{
+				"path": root,
+			},
+		},
+	}
+	data, _ := json.Marshal(planReq)
+	in := strings.NewReader(string(data) + "\n")
+	var out bytes.Buffer
+
+	if err := s.Serve(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	resData, _ := json.Marshal(resp.Result)
+	var toolRes CallToolResult
+	_ = json.Unmarshal(resData, &toolRes)
+
+	var planRes PlanResult
+	if err := json.Unmarshal([]byte(toolRes.Content[0].Text), &planRes); err != nil {
+		t.Fatalf("failed to unmarshal PlanResult: %v", err)
+	}
+	if len(planRes.Decisions) == 0 {
+		t.Fatal("expected decisions trace in octo_plan output")
+	}
+	hasLangDecision := false
+	for _, d := range planRes.Decisions {
+		if d.Decision == "language" && strings.EqualFold(d.Value, "go") {
+			hasLangDecision = true
+			break
+		}
+	}
+	if !hasLangDecision {
+		t.Fatalf("expected decision trace to include language=go, got: %#v", planRes.Decisions)
+	}
+}
+
+func TestServerVerifyStructuredDiagnosticsOnFailure(t *testing.T) {
+	root := t.TempDir()
+	// Create a project with explicit port requirement in .octo.yaml
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{
+		"name": "verify-fail-test",
+		"scripts": { "start": "node server.js" }
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	octoYaml := `components:
+  verify-fail-test:
+    port: 54321
+`
+	if err := os.WriteFile(filepath.Join(root, ".octo.yaml"), []byte(octoYaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewServer()
+
+	// Call octo_verify when nothing is running -> should fail with diagnostic
+	verifyReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      103,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "octo_verify",
+			"arguments": map[string]interface{}{
+				"path":    root,
+				"timeout": 1,
+			},
+		},
+	}
+	data, _ := json.Marshal(verifyReq)
+	in := strings.NewReader(string(data) + "\n")
+	var out bytes.Buffer
+
+	if err := s.Serve(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	resData, _ := json.Marshal(resp.Result)
+	var toolRes CallToolResult
+	_ = json.Unmarshal(resData, &toolRes)
+
+	if !toolRes.IsError {
+		t.Fatal("expected octo_verify to report error when runtime is not running")
+	}
+
+	var report VerificationReport
+	if err := json.Unmarshal([]byte(toolRes.Content[0].Text), &report); err != nil {
+		t.Fatalf("failed to unmarshal VerificationReport: %v", err)
+	}
+
+	if report.Success {
+		t.Fatal("expected report.Success to be false")
+	}
+	if report.ErrorCode == "" {
+		t.Fatal("expected report.ErrorCode to be populated on failure")
+	}
+	if report.RootCause == "" {
+		t.Fatal("expected report.RootCause to be populated on failure")
+	}
+	if report.SuggestedFix == "" {
+		t.Fatal("expected report.SuggestedFix to be populated on failure")
+	}
+}
+
+func TestServerTopologyEnriched(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/topotest\ngo 1.24\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewServer()
+
+	topoReq := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      104,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "octo_topology",
+			"arguments": map[string]interface{}{
+				"path": root,
+			},
+		},
+	}
+	data, _ := json.Marshal(topoReq)
+	in := strings.NewReader(string(data) + "\n")
+	var out bytes.Buffer
+
+	if err := s.Serve(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	resData, _ := json.Marshal(resp.Result)
+	var toolRes CallToolResult
+	_ = json.Unmarshal(resData, &toolRes)
+
+	var topoRes TopologyResult
+	if err := json.Unmarshal([]byte(toolRes.Content[0].Text), &topoRes); err != nil {
+		t.Fatalf("failed to unmarshal TopologyResult: %v", err)
+	}
+
+	if len(topoRes.Nodes) == 0 {
+		t.Fatal("expected topology nodes")
+	}
+	if len(topoRes.Components) == 0 {
+		t.Fatal("expected topology components")
 	}
 }

@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/Octo-sh/Octo-CLI/internal/intelligence"
+	"github.com/Octo-sh/Octo-CLI/internal/secrets"
 )
 
 func DefaultResources() []Resource {
@@ -23,6 +25,12 @@ func DefaultResources() []Resource {
 			URI:         "octo://execution-plan",
 			Name:        "Execution Plan",
 			Description: "Deterministic step-by-step execution plan and topological order.",
+			MimeType:    "application/json",
+		},
+		{
+			URI:         "octo://env",
+			Name:        "Environment Variables & Template",
+			Description: "Status of required, optional, and missing environment variables, plus safe template.",
 			MimeType:    "application/json",
 		},
 		{
@@ -56,6 +64,8 @@ func ReadResource(ctx context.Context, uriStr string) (ReadResourceResult, error
 		return readTopologyResource(target, uriStr)
 	case "execution-plan":
 		return readPlanResource(ctx, target, uriStr)
+	case "env":
+		return readEnvResource(target, uriStr)
 	case "lock":
 		return readLockResource(target, uriStr)
 	default:
@@ -74,7 +84,14 @@ func readTopologyResource(target, uri string) (ReadResourceResult, error) {
 		return ReadResourceResult{}, fmt.Errorf("build topology failed: %w", err)
 	}
 
-	data, err := json.MarshalIndent(graph, "", "  ")
+	result := TopologyResult{
+		TopologyGraph: graph,
+		Components:    model.Components,
+		Services:      model.Services,
+		Bindings:      intelligence.ResolveEnvironmentBindings(model),
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return ReadResourceResult{}, fmt.Errorf("marshal topology: %w", err)
 	}
@@ -100,9 +117,67 @@ func readPlanResource(ctx context.Context, target, uri string) (ReadResourceResu
 		return ReadResourceResult{}, fmt.Errorf("plan failed: %w", err)
 	}
 
-	data, err := json.MarshalIndent(plan, "", "  ")
+	decisions := intelligence.BuildDecisionTrace(model, plan)
+	result := PlanResult{
+		ExecutionPlan: plan,
+		Decisions:     decisions,
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return ReadResourceResult{}, fmt.Errorf("marshal plan: %w", err)
+	}
+
+	return ReadResourceResult{
+		Contents: []ResourceContent{{
+			URI:      uri,
+			MimeType: "application/json",
+			Text:     string(data),
+		}},
+	}, nil
+}
+
+func readEnvResource(target, uri string) (ReadResourceResult, error) {
+	model, err := intelligence.Analyze(target)
+	if err != nil {
+		return ReadResourceResult{}, fmt.Errorf("analyze failed: %w", err)
+	}
+
+	status := intelligence.InspectEnvironmentStatus(target, model)
+	env, _ := intelligence.ResolveProjectEnvironment(target, model)
+
+	criticalMap := make(map[string]bool)
+	for _, v := range status.MissingRequired {
+		if secrets.IsCriticalEnvVar(v) {
+			criticalMap[v] = true
+		}
+	}
+	for _, v := range status.MissingOptional {
+		if secrets.IsCriticalEnvVar(v) {
+			criticalMap[v] = true
+		}
+	}
+
+	var criticalMissing []string
+	for k := range criticalMap {
+		criticalMissing = append(criticalMissing, k)
+	}
+	sort.Strings(criticalMissing)
+
+	result := EnvCheckResult{
+		ProjectName:     model.Name,
+		TotalVariables:  status.TotalVariables,
+		Present:         status.Present,
+		MissingRequired: status.MissingRequired,
+		MissingOptional: status.MissingOptional,
+		CriticalMissing: criticalMissing,
+		MissingBindings: intelligence.DiagnoseEnvironmentBindings(model, env),
+		Template:        status.Template,
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return ReadResourceResult{}, fmt.Errorf("marshal env resource: %w", err)
 	}
 
 	return ReadResourceResult{

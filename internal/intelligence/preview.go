@@ -50,6 +50,7 @@ type MachinePreview struct {
 	Prerequisites []ProvisioningRequirement `json:"prerequisites"`
 	RuntimeCheck  RuntimeCheck              `json:"runtime_check"`
 	Environment   EnvironmentStatus         `json:"environment"`
+	Decisions     []DecisionTrace           `json:"decisions,omitempty"`
 }
 
 // BuildMachinePreview inspects the model and plan to project all machine mutations
@@ -61,6 +62,7 @@ func BuildMachinePreview(ctx context.Context, model ProjectModel, plan Execution
 		Prerequisites: plan.Provisioning,
 		RuntimeCheck:  CheckRuntimeCompatibility(ctx, model),
 		Environment:   InspectEnvironmentStatus(model.Root, model),
+		Decisions:     BuildDecisionTrace(model, plan),
 		Mutations:     make([]MutationPreview, 0),
 		Network:       make([]NetworkPreview, 0),
 		Processes:     make([]ProcessPreview, 0),
