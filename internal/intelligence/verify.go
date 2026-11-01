@@ -37,9 +37,12 @@ type VerificationCheck struct {
 
 // VerificationResult is safe to serialize and contains no environment values.
 type VerificationResult struct {
-	CheckID string `json:"check_id" yaml:"check_id"`
-	Passed  bool   `json:"passed" yaml:"passed"`
-	Reason  string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	CheckID      string      `json:"check_id" yaml:"check_id"`
+	Passed       bool        `json:"passed" yaml:"passed"`
+	Reason       string      `json:"reason,omitempty" yaml:"reason,omitempty"`
+	ErrorCode    FailureCode `json:"error_code,omitempty" yaml:"error_code,omitempty"`
+	RootCause    string      `json:"root_cause,omitempty" yaml:"root_cause,omitempty"`
+	SuggestedFix string      `json:"suggested_fix,omitempty" yaml:"suggested_fix,omitempty"`
 }
 
 // VerificationProvider executes a specific kind of verification check.
@@ -96,14 +99,27 @@ func (r *VerificationRegistry) Verify(ctx context.Context, checks []Verification
 		if !ok {
 			// Fail closed: a check we cannot run must never count as verified.
 			res := VerificationResult{
-				CheckID: check.ID,
-				Passed:  false,
-				Reason:  fmt.Sprintf("verification kind %q has no registered provider; check is unverified", check.Kind),
+				CheckID:      check.ID,
+				Passed:       false,
+				Reason:       fmt.Sprintf("verification kind %q has no registered provider; check is unverified", check.Kind),
+				ErrorCode:    FailurePlanValidation,
+				RootCause:    fmt.Sprintf("Unsupported verification kind %q requested for component %q.", check.Kind, check.Component),
+				SuggestedFix: "Register a provider for this check kind or check verification configuration.",
 			}
 			results = append(results, res)
 			return results, fmt.Errorf("verification %q failed: %s", check.ID, res.Reason)
 		}
 		res, err := provider.Verify(ctx, check)
+		if !res.Passed && res.ErrorCode == "" {
+			diag := DiagnoseExecutionFailure(res.Reason, err)
+			res.ErrorCode = diag.Code
+			if res.RootCause == "" {
+				res.RootCause = diag.RootCause
+			}
+			if res.SuggestedFix == "" {
+				res.SuggestedFix = diag.SuggestedFix
+			}
+		}
 		results = append(results, res)
 		if err != nil {
 			return results, fmt.Errorf("verification %q failed: %w", check.ID, err)
@@ -126,6 +142,10 @@ func (p *PortVerificationProvider) Verify(ctx context.Context, check Verificatio
 	res := VerificationResult{CheckID: check.ID, Passed: err == nil}
 	if err != nil {
 		res.Reason = err.Error()
+		diag := DiagnoseExecutionFailure(err.Error(), err)
+		res.ErrorCode = diag.Code
+		res.RootCause = diag.RootCause
+		res.SuggestedFix = diag.SuggestedFix
 	}
 	return res, err
 }
@@ -169,13 +189,16 @@ func (h *HTTPVerificationProvider) Verify(ctx context.Context, check Verificatio
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error()}, err
+		diag := DiagnoseExecutionFailure(err.Error(), err)
+		return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error(), ErrorCode: diag.Code, RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix}, err
 	}
 
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return VerificationResult{CheckID: check.ID, Passed: false, Reason: fmt.Sprintf("HTTP GET %s failed: %v", url, err)}, err
+		reason := fmt.Sprintf("HTTP GET %s failed: %v", url, err)
+		diag := DiagnoseExecutionFailure(reason, err)
+		return VerificationResult{CheckID: check.ID, Passed: false, Reason: reason, ErrorCode: diag.Code, RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix}, err
 	}
 	defer resp.Body.Close()
 
@@ -183,11 +206,13 @@ func (h *HTTPVerificationProvider) Verify(ctx context.Context, check Verificatio
 	if expectedStatus > 0 {
 		if resp.StatusCode != expectedStatus {
 			err := fmt.Errorf("HTTP %s returned status %d, expected %d", url, resp.StatusCode, expectedStatus)
-			return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error()}, err
+			diag := DiagnoseExecutionFailure(err.Error(), err)
+			return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error(), ErrorCode: diag.Code, RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix}, err
 		}
 	} else if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		err := fmt.Errorf("HTTP %s returned non-2xx status code %d", url, resp.StatusCode)
-		return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error()}, err
+		diag := DiagnoseExecutionFailure(err.Error(), err)
+		return VerificationResult{CheckID: check.ID, Passed: false, Reason: err.Error(), ErrorCode: diag.Code, RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix}, err
 	}
 
 	return VerificationResult{CheckID: check.ID, Passed: true}, nil

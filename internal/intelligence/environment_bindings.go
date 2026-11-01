@@ -1,6 +1,57 @@
 package intelligence
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
+
+// MissingBindingDiagnostic represents an unsatisfied topology reference binding.
+type MissingBindingDiagnostic struct {
+	Component  string            `json:"component" yaml:"component"`
+	Variable   string            `json:"variable" yaml:"variable"`
+	Target     string            `json:"target" yaml:"target"`
+	Kind       RelationshipKind  `json:"kind" yaml:"kind"`
+	Diagnostic FailureDiagnostic `json:"diagnostic" yaml:"diagnostic"`
+}
+
+// DiagnoseEnvironmentBindings checks whether required references have matching
+// environment values or active backing services.
+func DiagnoseEnvironmentBindings(model ProjectModel, env ResolvedEnvironment) []MissingBindingDiagnostic {
+	var diagnostics []MissingBindingDiagnostic
+	bindings := ResolveEnvironmentBindings(model)
+	for _, b := range bindings {
+		val := ""
+		if env.Values != nil {
+			val = env.Values[b.Variable]
+		}
+		if val == "" {
+			for _, scoped := range env.ScopedValues {
+				if v, ok := scoped[b.Variable]; ok && v != "" {
+					val = v
+					break
+				}
+			}
+		}
+		if val == "" {
+			placeholder := placeholderFor(b.Variable, model)
+			diag := FailureDiagnostic{
+				Code:         FailureMissingEnvSecret,
+				Class:        FailureClassMissingEnvSecret,
+				RootCause:    fmt.Sprintf("Component %q requires %q to connect to %q (%s), but the variable is not set.", b.Source, b.Variable, b.Target, b.Kind),
+				SuggestedFix: fmt.Sprintf("Run 'octo env init' or set %s=%s in your .env file.", b.Variable, placeholder),
+				MissingKey:   b.Variable,
+			}
+			diagnostics = append(diagnostics, MissingBindingDiagnostic{
+				Component:  b.Source,
+				Variable:   b.Variable,
+				Target:     b.Target,
+				Kind:       b.Kind,
+				Diagnostic: diag,
+			})
+		}
+	}
+	return diagnostics
+}
 
 // ResolveEnvironmentBindings derives secret-safe environment bindings from
 // explicit topology references. It never reads or stores environment values.

@@ -7,11 +7,14 @@ import (
 
 // DecisionTrace records why Octo made important repository and execution decisions.
 type DecisionTrace struct {
-	Decision string   `json:"decision" yaml:"decision"`
-	Value    string   `json:"value" yaml:"value"`
-	Reason   string   `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Evidence []Evidence `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Confidence float64 `json:"confidence" yaml:"confidence"`
+	Decision     string      `json:"decision" yaml:"decision"`
+	Value        string      `json:"value" yaml:"value"`
+	Reason       string      `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Evidence     []Evidence  `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Confidence   float64     `json:"confidence" yaml:"confidence"`
+	ErrorCode    FailureCode `json:"error_code,omitempty" yaml:"error_code,omitempty"`
+	RootCause    string      `json:"root_cause,omitempty" yaml:"root_cause,omitempty"`
+	SuggestedFix string      `json:"suggested_fix,omitempty" yaml:"suggested_fix,omitempty"`
 }
 
 // BuildDecisionTrace derives explainable decisions from the ProjectModel and plan.

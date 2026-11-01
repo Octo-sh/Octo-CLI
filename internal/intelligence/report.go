@@ -40,6 +40,9 @@ type ExecutionFailure struct {
 	StepID         string                `json:"step_id" yaml:"step_id"`
 	CandidateID    string                `json:"candidate_id,omitempty" yaml:"candidate_id,omitempty"`
 	Classification FailureClassification `json:"classification,omitempty" yaml:"classification,omitempty"`
+	ErrorCode      FailureCode           `json:"error_code,omitempty" yaml:"error_code,omitempty"`
+	RootCause      string                `json:"root_cause,omitempty" yaml:"root_cause,omitempty"`
+	SuggestedFix   string                `json:"suggested_fix,omitempty" yaml:"suggested_fix,omitempty"`
 	Reason         string                `json:"reason" yaml:"reason"`
 	Evidence       Evidence              `json:"evidence" yaml:"evidence"`
 }
@@ -143,6 +146,9 @@ type ExecutionReport struct {
 	VerifiedStartup   bool                  `json:"verified_startup" yaml:"verified_startup"`
 	Success           bool                  `json:"success" yaml:"success"`
 	FailureReason     string                `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`
+	ErrorCode         FailureCode           `json:"error_code,omitempty" yaml:"error_code,omitempty"`
+	RootCause         string                `json:"root_cause,omitempty" yaml:"root_cause,omitempty"`
+	SuggestedFix      string                `json:"suggested_fix,omitempty" yaml:"suggested_fix,omitempty"`
 }
 
 // VerifiedStartupResult is an immutable snapshot of verified startup state.
@@ -491,6 +497,9 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 	ownedServicesMap := make(map[string]struct{})
 	defer func() {
 		if !report.Success || ctx.Err() != nil {
+			if report.FailureReason != "" && report.RootCause == "" {
+				populateReportFailureDiagnostics(&report)
+			}
 			if len(running) > 0 || len(ownedServicesMap) > 0 {
 				teardownOpts := opts
 				teardownOpts.OwnedServices = make([]string, 0, len(ownedServicesMap))
@@ -579,10 +588,11 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 					result.Status = StepFailed
 					result.Reason = err.Error()
 					report.Steps = append(report.Steps, result)
-					classification := ClassifyExecutionFailure(err.Error(), err)
+					diag := DiagnoseExecutionFailure(err.Error(), err)
 					report.Failures = append(report.Failures, ExecutionFailure{
-						StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: err.Error(),
-						Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] %s", classification, err.Error()), Strength: 1},
+						StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+						RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: err.Error(),
+						Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] %s", diag.Class, err.Error()), Strength: 1},
 					})
 					report.FailureReason = err.Error()
 					continue
@@ -592,13 +602,14 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 					result.Status = StepFailed
 					result.Reason = err.Error()
 					report.Steps = append(report.Steps, result)
-					classification := ClassifyExecutionFailure(err.Error(), err)
-					detail := fmt.Sprintf("[%s] Execution candidate failed to start: %s", classification, err.Error())
-					if classification == FailureClassMissingArguments {
-						detail = fmt.Sprintf("[%s] Application appears to require arguments. Pass them using: octo run -- [args...]", classification)
+					diag := DiagnoseExecutionFailure(err.Error(), err)
+					detail := fmt.Sprintf("[%s] Execution candidate failed to start: %s", diag.Class, err.Error())
+					if diag.Class == FailureClassMissingArguments {
+						detail = fmt.Sprintf("[%s] Application appears to require arguments. Pass them using: octo run -- [args...]", diag.Class)
 					}
 					report.Failures = append(report.Failures, ExecutionFailure{
-						StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: err.Error(),
+						StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+						RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: err.Error(),
 						Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: detail, Strength: 1},
 					})
 					report.FailureReason = err.Error()
@@ -613,17 +624,21 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 						_ = process.Wait()
 						result.Status = StepFailed
 						result.Reason = err.Error()
+						diag := DiagnoseExecutionFailure("Startup verification failed: "+err.Error(), err)
 						for i := len(report.Decisions) - 1; i >= 0; i-- {
 							if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
 								report.Decisions[i].Outcome = "failed"
+								report.Decisions[i].ErrorCode = diag.Code
+								report.Decisions[i].RootCause = diag.RootCause
+								report.Decisions[i].SuggestedFix = diag.SuggestedFix
 								break
 							}
 						}
 						report.Steps = append(report.Steps, result)
-						classification := ClassifyExecutionFailure("Startup verification failed: "+err.Error(), err)
 						report.Failures = append(report.Failures, ExecutionFailure{
-							StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: err.Error(),
-							Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Startup verification failed: %s", classification, err.Error()), Strength: 1},
+							StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+							RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: err.Error(),
+							Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Startup verification failed: %s", diag.Class, err.Error()), Strength: 1},
 						})
 						report.FailureReason = err.Error()
 						continue
@@ -644,17 +659,21 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 						_ = process.Wait()
 						result.Status = StepFailed
 						result.Reason = livenessErr.Error()
+						diag := DiagnoseExecutionFailure("Startup verification failed: "+livenessErr.Error(), livenessErr)
 						for i := len(report.Decisions) - 1; i >= 0; i-- {
 							if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
 								report.Decisions[i].Outcome = "failed"
+								report.Decisions[i].ErrorCode = diag.Code
+								report.Decisions[i].RootCause = diag.RootCause
+								report.Decisions[i].SuggestedFix = diag.SuggestedFix
 								break
 							}
 						}
 						report.Steps = append(report.Steps, result)
-						classification := ClassifyExecutionFailure("Startup verification failed: "+livenessErr.Error(), livenessErr)
 						report.Failures = append(report.Failures, ExecutionFailure{
-							StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: livenessErr.Error(),
-							Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Startup verification failed: %s", classification, livenessErr.Error()), Strength: 1},
+							StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+							RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: livenessErr.Error(),
+							Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Startup verification failed: %s", diag.Class, livenessErr.Error()), Strength: 1},
 						})
 						report.FailureReason = livenessErr.Error()
 						continue
@@ -666,17 +685,21 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 							failMsg := fmt.Sprintf("process log reported fatal error: %s", fatalErr)
 							result.Status = StepFailed
 							result.Reason = failMsg
+							diag := DiagnoseExecutionFailure(failMsg, errors.New(failMsg))
 							for i := len(report.Decisions) - 1; i >= 0; i-- {
 								if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
 									report.Decisions[i].Outcome = "failed"
+									report.Decisions[i].ErrorCode = diag.Code
+									report.Decisions[i].RootCause = diag.RootCause
+									report.Decisions[i].SuggestedFix = diag.SuggestedFix
 									break
 								}
 							}
 							report.Steps = append(report.Steps, result)
-							classification := ClassifyExecutionFailure(failMsg, errors.New(failMsg))
 							report.Failures = append(report.Failures, ExecutionFailure{
-								StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: failMsg,
-								Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] %s", classification, failMsg), Strength: 1},
+								StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+								RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: failMsg,
+								Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] %s", diag.Class, failMsg), Strength: 1},
 							})
 							report.FailureReason = failMsg
 							continue
@@ -709,17 +732,21 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 						if err := process.Wait(); err != nil {
 							result.Status = StepFailed
 							result.Reason = err.Error()
+							diag := DiagnoseExecutionFailure("Execution failed: "+err.Error(), err)
 							for i := len(report.Decisions) - 1; i >= 0; i-- {
 								if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
 									report.Decisions[i].Outcome = "failed"
+									report.Decisions[i].ErrorCode = diag.Code
+									report.Decisions[i].RootCause = diag.RootCause
+									report.Decisions[i].SuggestedFix = diag.SuggestedFix
 									break
 								}
 							}
 							report.Steps = append(report.Steps, result)
-							classification := ClassifyExecutionFailure("Execution failed: "+err.Error(), err)
 							report.Failures = append(report.Failures, ExecutionFailure{
-								StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: err.Error(),
-								Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Execution failed: %s", classification, err.Error()), Strength: 1},
+								StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+								RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: err.Error(),
+								Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: fmt.Sprintf("[%s] Execution failed: %s", diag.Class, err.Error()), Strength: 1},
 							})
 							report.FailureReason = err.Error()
 							continue
@@ -754,20 +781,24 @@ func ExecutePlanReportWithOptions(ctx context.Context, model ProjectModel, plan 
 				}
 				result.Status = StepFailed
 				result.Reason = err.Error()
+				diag := DiagnoseExecutionFailure(err.Error(), err)
 				for i := len(report.Decisions) - 1; i >= 0; i-- {
 					if report.Decisions[i].Name == "execution."+id && report.Decisions[i].OptionID == candidate.ID {
 						report.Decisions[i].Outcome = "failed"
+						report.Decisions[i].ErrorCode = diag.Code
+						report.Decisions[i].RootCause = diag.RootCause
+						report.Decisions[i].SuggestedFix = diag.SuggestedFix
 						break
 					}
 				}
 				report.Steps = append(report.Steps, result)
-				classification := ClassifyExecutionFailure(err.Error(), err)
-				detail := fmt.Sprintf("[%s] Execution candidate failed: %s", classification, err.Error())
-				if classification == FailureClassMissingArguments {
-					detail = fmt.Sprintf("[%s] Application appears to require arguments. Pass them using: octo run -- [args...]", classification)
+				detail := fmt.Sprintf("[%s] Execution candidate failed: %s", diag.Class, err.Error())
+				if diag.Class == FailureClassMissingArguments {
+					detail = fmt.Sprintf("[%s] Application appears to require arguments. Pass them using: octo run -- [args...]", diag.Class)
 				}
 				report.Failures = append(report.Failures, ExecutionFailure{
-					StepID: id, CandidateID: candidate.ID, Classification: classification, Reason: err.Error(),
+					StepID: id, CandidateID: candidate.ID, Classification: diag.Class, ErrorCode: diag.Code,
+					RootCause: diag.RootCause, SuggestedFix: diag.SuggestedFix, Reason: err.Error(),
 					Evidence: Evidence{Kind: EvidenceExecutionFailure, Path: id, Detail: detail, Strength: 1},
 				})
 				report.FailureReason = err.Error()
@@ -1072,4 +1103,49 @@ func StopActiveProcesses(report ExecutionReport) error {
 		_ = process.Wait()
 	}
 	return errors.Join(errs...)
+}
+
+func populateReportFailureDiagnostics(report *ExecutionReport) {
+	if report == nil {
+		return
+	}
+	if len(report.Failures) > 0 {
+		last := report.Failures[len(report.Failures)-1]
+		if report.ErrorCode == "" {
+			report.ErrorCode = last.ErrorCode
+		}
+		if report.RootCause == "" {
+			report.RootCause = last.RootCause
+		}
+		if report.SuggestedFix == "" {
+			report.SuggestedFix = last.SuggestedFix
+		}
+		return
+	}
+	for _, v := range report.Verification {
+		if !v.Passed {
+			if report.ErrorCode == "" {
+				report.ErrorCode = v.ErrorCode
+			}
+			if report.RootCause == "" {
+				report.RootCause = v.RootCause
+			}
+			if report.SuggestedFix == "" {
+				report.SuggestedFix = v.SuggestedFix
+			}
+			return
+		}
+	}
+	if report.FailureReason != "" {
+		diag := DiagnoseExecutionFailure(report.FailureReason, errors.New(report.FailureReason))
+		if report.ErrorCode == "" {
+			report.ErrorCode = diag.Code
+		}
+		if report.RootCause == "" {
+			report.RootCause = diag.RootCause
+		}
+		if report.SuggestedFix == "" {
+			report.SuggestedFix = diag.SuggestedFix
+		}
+	}
 }

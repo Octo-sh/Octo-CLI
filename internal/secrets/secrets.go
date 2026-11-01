@@ -91,8 +91,8 @@ var criticalEnvVarPatterns = []string{
 	"NEXT_PUBLIC_API",
 }
 
-// isCriticalEnvVar checks if a variable is critical for the app to run
-func isCriticalEnvVar(name string) bool {
+// IsCriticalEnvVar checks if a variable is critical for the app to run
+func IsCriticalEnvVar(name string) bool {
 	nameLower := strings.ToLower(name)
 	for _, pattern := range criticalEnvVarPatterns {
 		if strings.Contains(nameLower, strings.ToLower(pattern)) {
@@ -100,6 +100,10 @@ func isCriticalEnvVar(name string) bool {
 		}
 	}
 	return false
+}
+
+func isCriticalEnvVar(name string) bool {
+	return IsCriticalEnvVar(name)
 }
 
 // isValidEnvVarName checks if a name looks like a valid environment variable
