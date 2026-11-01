@@ -18,6 +18,8 @@ LICENSE
 .vscode/
 .idea/
 .DS_Store
+**/.DS_Store
+._*
 Thumbs.db
 
 # Ignore secrets and logs

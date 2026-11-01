@@ -1,3 +1,5 @@
+// Package intelligence discovers static communication edges (network references) between components and services.
+// Note: Evaluates connection strings and environment keys without runtime network inspection.
 package intelligence
 
 import (

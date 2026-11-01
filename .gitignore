@@ -3,6 +3,9 @@ idea.md
 bin/
 .octo/
 .DS_Store
+**/.DS_Store
+._*
+Thumbs.db
 .agents
 .env
 .env.*
