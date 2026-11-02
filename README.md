@@ -118,6 +118,8 @@ octo verify    # or: octo v
 | `octo e` | `octo env` | Inspect environment variable status |
 | `octo e tpl` | `octo env template` | Generate safe `.env` template |
 | `octo bench` / `octo eval` | `octo benchmark` | Benchmark against raw shell baselines |
+| `octo mcp init` | `octo mcp init` | 1-command MCP setup for AI agents (.mcp.json & .cursor) |
+| `octo mcp config` | `octo mcp config` | Print copy-pasteable MCP server configuration JSON |
 
 **Everyday Flag Shortcuts:**
 - `-j`: Shorthand for `--json` on commands with JSON output (`octo r -j`, `octo ins -j`, `octo p -j`, etc.).
@@ -139,7 +141,26 @@ When AI coding agents (such as Claude Code, Cursor, Windsurf, Antigravity, or Cl
 
 Octo includes a native **JSON-RPC 2.0 Model Context Protocol (MCP)** server over standard I/O (`stdio`). Connect Octo to your favorite AI coding assistant to give it deterministic, zero-hallucination execution, structured root-cause diagnostics, and clean process-group teardown without zombie processes.
 
-### Quickstart Configuration
+### 1-Command Automated Setup (`octo mcp init`)
+
+Configure your repository for all AI coding agents with a single command:
+
+```bash
+octo mcp init
+```
+
+This automatically detects your environment and safely writes or merges the `octo` server configuration into:
+- `.mcp.json` (supported by Claude Code, Cursor, Antigravity, Cline)
+- `.cursor/mcp.json` (if a `.cursor/` directory exists)
+
+Existing MCP servers and custom configurations are preserved without overwriting.
+
+To print the copy-pasteable JSON block pointing to your resolved binary path:
+```bash
+octo mcp config
+```
+
+### Manual Configuration
 
 #### 1. Cursor (`.cursor/mcp.json` or `~/.cursor/mcp.json`)
 ```json

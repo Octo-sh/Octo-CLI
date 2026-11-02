@@ -125,3 +125,221 @@ func TestMcpCommandToolsListAndCall(t *testing.T) {
 		t.Fatalf("expected resources/read to return total_variables, got: %s", lines[4])
 	}
 }
+
+func TestMcpConfigCommand(t *testing.T) {
+	cmd := mcpConfigCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("mcp config failed: %v", err)
+	}
+
+	output := out.String()
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &cfg); err != nil {
+		t.Fatalf("expected valid JSON output from mcp config, got: %s (err: %v)", output, err)
+	}
+
+	servers, ok := cfg["mcpServers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected mcpServers object in output, got: %v", cfg)
+	}
+
+	octoServer, ok := servers["octo"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected octo server in mcpServers, got: %v", servers)
+	}
+
+	command, ok := octoServer["command"].(string)
+	if !ok || command == "" {
+		t.Fatalf("expected non-empty command string in octo server, got: %v", octoServer["command"])
+	}
+
+	args, ok := octoServer["args"].([]interface{})
+	if !ok || len(args) != 1 || args[0] != "mcp" {
+		t.Fatalf("expected args [\"mcp\"], got: %v", octoServer["args"])
+	}
+}
+
+func TestMcpInitCommand_NewRepository(t *testing.T) {
+	root := t.TempDir()
+
+	cmd := mcpInitCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, []string{root}); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	mcpPath := filepath.Join(root, ".mcp.json")
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("expected .mcp.json to be created, got error: %v", err)
+	}
+
+	var rootCfg map[string]interface{}
+	if err := json.Unmarshal(data, &rootCfg); err != nil {
+		t.Fatalf("expected valid JSON in .mcp.json, got: %s (err: %v)", string(data), err)
+	}
+
+	servers, ok := rootCfg["mcpServers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected mcpServers map, got: %v", rootCfg)
+	}
+	if _, ok := servers["octo"]; !ok {
+		t.Fatalf("expected octo server in mcpServers, got: %v", servers)
+	}
+
+	cursorPath := filepath.Join(root, ".cursor", "mcp.json")
+	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
+		t.Fatalf("did not expect .cursor/mcp.json when .cursor does not exist")
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, ".mcp.json") {
+		t.Fatalf("expected output to mention .mcp.json, got: %s", outStr)
+	}
+}
+
+func TestMcpInitCommand_WithCursorDir(t *testing.T) {
+	root := t.TempDir()
+	cursorDir := filepath.Join(root, ".cursor")
+	if err := os.Mkdir(cursorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mcpInitCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, []string{root}); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	// Verify both .mcp.json and .cursor/mcp.json exist
+	mcpPath := filepath.Join(root, ".mcp.json")
+	if _, err := os.Stat(mcpPath); err != nil {
+		t.Fatalf("expected .mcp.json to exist: %v", err)
+	}
+
+	cursorMcpPath := filepath.Join(cursorDir, "mcp.json")
+	data, err := os.ReadFile(cursorMcpPath)
+	if err != nil {
+		t.Fatalf("expected .cursor/mcp.json to exist: %v", err)
+	}
+
+	var cursorCfg map[string]interface{}
+	if err := json.Unmarshal(data, &cursorCfg); err != nil {
+		t.Fatalf("expected valid JSON in .cursor/mcp.json: %v", err)
+	}
+	servers := cursorCfg["mcpServers"].(map[string]interface{})
+	if _, ok := servers["octo"]; !ok {
+		t.Fatalf("expected octo in .cursor/mcp.json, got: %v", servers)
+	}
+}
+
+func TestMcpInitCommand_SafeMergeExistingServers(t *testing.T) {
+	root := t.TempDir()
+
+	initialMcp := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  },
+  "customSetting": "custom-value"
+}
+`
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(initialMcp), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cursorDir := filepath.Join(root, ".cursor")
+	if err := os.Mkdir(cursorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initialCursorMcp := `{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"]
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(cursorDir, "mcp.json"), []byte(initialCursorMcp), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mcpInitCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, []string{root}); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	// Verify root .mcp.json preserved "github" and "customSetting"
+	mcpData, err := os.ReadFile(filepath.Join(root, ".mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mcpCfg map[string]interface{}
+	if err := json.Unmarshal(mcpData, &mcpCfg); err != nil {
+		t.Fatal(err)
+	}
+	if mcpCfg["customSetting"] != "custom-value" {
+		t.Fatalf("expected customSetting to be preserved, got: %v", mcpCfg["customSetting"])
+	}
+	mcpServers := mcpCfg["mcpServers"].(map[string]interface{})
+	if _, ok := mcpServers["github"]; !ok {
+		t.Fatalf("expected github server to be preserved in .mcp.json")
+	}
+	if _, ok := mcpServers["octo"]; !ok {
+		t.Fatalf("expected octo server to be added to .mcp.json")
+	}
+
+	// Verify .cursor/mcp.json preserved "postgres"
+	cursorData, err := os.ReadFile(filepath.Join(cursorDir, "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursorCfg map[string]interface{}
+	if err := json.Unmarshal(cursorData, &cursorCfg); err != nil {
+		t.Fatal(err)
+	}
+	cursorServers := cursorCfg["mcpServers"].(map[string]interface{})
+	if _, ok := cursorServers["postgres"]; !ok {
+		t.Fatalf("expected postgres server to be preserved in .cursor/mcp.json")
+	}
+	if _, ok := cursorServers["octo"]; !ok {
+		t.Fatalf("expected octo server to be added to .cursor/mcp.json")
+	}
+}
+
+func TestMcpInitCommand_InvalidJSONError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte("{ broken json "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mcpInitCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.RunE(cmd, []string{root})
+	if err == nil {
+		t.Fatal("expected error when existing .mcp.json has invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "valid JSON") {
+		t.Fatalf("expected actionable error message, got: %v", err)
+	}
+}
