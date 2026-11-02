@@ -126,7 +126,17 @@ func TestMcpCommandToolsListAndCall(t *testing.T) {
 	}
 }
 
+func resetMcpFlags() {
+	_ = mcpConfigCmd.Flags().Set("abs-path", "false")
+	_ = mcpInitCmd.Flags().Set("abs-path", "false")
+	_ = mcpInitCmd.Flags().Set("dir", "")
+	_ = mcpInitCmd.Flags().Set("cursor", "false")
+}
+
 func TestMcpConfigCommand(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
 	cmd := mcpConfigCmd
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -153,8 +163,8 @@ func TestMcpConfigCommand(t *testing.T) {
 	}
 
 	command, ok := octoServer["command"].(string)
-	if !ok || command == "" {
-		t.Fatalf("expected non-empty command string in octo server, got: %v", octoServer["command"])
+	if !ok || command != "octo" {
+		t.Fatalf("expected command 'octo' in default mcp config, got: %v", octoServer["command"])
 	}
 
 	args, ok := octoServer["args"].([]interface{})
@@ -163,7 +173,43 @@ func TestMcpConfigCommand(t *testing.T) {
 	}
 }
 
+func TestMcpConfigCommand_AbsPath(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
+	cmd := mcpConfigCmd
+	if err := cmd.Flags().Set("abs-path", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("mcp config failed: %v", err)
+	}
+
+	output := out.String()
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &cfg); err != nil {
+		t.Fatalf("expected valid JSON output: %s", output)
+	}
+
+	servers := cfg["mcpServers"].(map[string]interface{})
+	octoServer := servers["octo"].(map[string]interface{})
+	command := octoServer["command"].(string)
+
+	expectedExe := resolveOctoExecutable()
+	if command != expectedExe {
+		t.Fatalf("expected command to be %q with --abs-path, got %q", expectedExe, command)
+	}
+}
+
 func TestMcpInitCommand_NewRepository(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
 	root := t.TempDir()
 
 	cmd := mcpInitCmd
@@ -205,7 +251,113 @@ func TestMcpInitCommand_NewRepository(t *testing.T) {
 	}
 }
 
+func TestMcpInitCommand_DirFlag(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
+	root := t.TempDir()
+	cmd := mcpInitCmd
+	if err := cmd.Flags().Set("dir", root); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	mcpPath := filepath.Join(root, ".mcp.json")
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("expected .mcp.json to exist at %s: %v", mcpPath, err)
+	}
+
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	servers := cfg["mcpServers"].(map[string]interface{})
+	octo := servers["octo"].(map[string]interface{})
+	if octo["command"] != "octo" {
+		t.Fatalf("expected command 'octo', got: %v", octo["command"])
+	}
+}
+
+func TestMcpInitCommand_CursorFlag(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
+	root := t.TempDir()
+	cursorDir := filepath.Join(root, ".cursor")
+	if _, err := os.Stat(cursorDir); !os.IsNotExist(err) {
+		t.Fatal("expected .cursor to not exist initially")
+	}
+
+	cmd := mcpInitCmd
+	if err := cmd.Flags().Set("cursor", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, []string{root}); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, ".mcp.json")); err != nil {
+		t.Fatalf("expected .mcp.json to exist: %v", err)
+	}
+	cursorMcpPath := filepath.Join(cursorDir, "mcp.json")
+	if _, err := os.Stat(cursorMcpPath); err != nil {
+		t.Fatalf("expected .cursor/mcp.json to be created with --cursor flag: %v", err)
+	}
+}
+
+func TestMcpInitCommand_AbsPathFlag(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
+	root := t.TempDir()
+	cmd := mcpInitCmd
+	if err := cmd.Flags().Set("abs-path", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.RunE(cmd, []string{root}); err != nil {
+		t.Fatalf("mcp init failed: %v", err)
+	}
+
+	mcpPath := filepath.Join(root, ".mcp.json")
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("read .mcp.json: %v", err)
+	}
+
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	servers := cfg["mcpServers"].(map[string]interface{})
+	octo := servers["octo"].(map[string]interface{})
+	expectedExe := resolveOctoExecutable()
+	if octo["command"] != expectedExe {
+		t.Fatalf("expected command %q with --abs-path, got %q", expectedExe, octo["command"])
+	}
+}
+
 func TestMcpInitCommand_WithCursorDir(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
 	root := t.TempDir()
 	cursorDir := filepath.Join(root, ".cursor")
 	if err := os.Mkdir(cursorDir, 0755); err != nil {
@@ -244,6 +396,9 @@ func TestMcpInitCommand_WithCursorDir(t *testing.T) {
 }
 
 func TestMcpInitCommand_SafeMergeExistingServers(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
 	root := t.TempDir()
 
 	initialMcp := `{
@@ -325,6 +480,9 @@ func TestMcpInitCommand_SafeMergeExistingServers(t *testing.T) {
 }
 
 func TestMcpInitCommand_InvalidJSONError(t *testing.T) {
+	resetMcpFlags()
+	t.Cleanup(resetMcpFlags)
+
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte("{ broken json "), 0644); err != nil {
 		t.Fatal(err)

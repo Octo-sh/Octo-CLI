@@ -5,8 +5,6 @@ Octo-CLI enables open-source maintainers and engineering teams to turn any repos
 ```yaml
 - name: Octo CI Smoke Gate
   uses: octo-sh/octo-cli@v1
-  with:
-    command: verify
 ```
 
 ---
@@ -49,6 +47,16 @@ jobs:
           args: --json
 ```
 
+### Parity Between Local AI Agents and CI Gate
+
+Developers and AI coding agents (Cursor, Claude Code, Windsurf) can configure Octo in 1 second locally:
+
+```bash
+octo mcp init
+```
+
+This connects your repository to agent tools (`octo_verify`, `octo_run_and_verify`, `octo_diagnose`) so agents catch runtime issues before opening a pull request. Adding `uses: octo-sh/octo-cli@v1` to your repository ensures CI enforces the exact same verification gate on every commit.
+
 ### Action Configuration Reference
 
 The `octo-sh/octo-cli` action works across Linux (`ubuntu-latest`), macOS (`macos-latest`), and Windows (`windows-latest`) runners:
@@ -58,7 +66,7 @@ The `octo-sh/octo-cli` action works across Linux (`ubuntu-latest`), macOS (`maco
 | `version` | Octo release tag to install (`latest`, or specific tag like `v1.2.2`, or `local`) | `latest` | `version: v1.2.2` |
 | `working-directory` | Directory to execute Octo commands within | `.` | `working-directory: services/api` |
 | `command` | Octo command to run (`verify`, `run`, `inspect`, `plan`) | `verify` | `command: verify` |
-| `args` | Additional arguments or flags passed directly to `octo` | `""` | `args: --strict --json` |
+| `args` | Additional arguments or flags passed directly to `octo` | `--json` | `args: --strict --json` |
 
 ---
 

@@ -39,8 +39,12 @@ server in .mcp.json, Cursor, Claude Desktop, or Windsurf.`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		exe := resolveOctoExecutable()
-		cfg, err := generateMCPConfig(exe)
+		absPath, _ := cmd.Flags().GetBool("abs-path")
+		cmdName := "octo"
+		if absPath {
+			cmdName = resolveOctoExecutable()
+		}
+		cfg, err := generateMCPConfig(cmdName)
 		if err != nil {
 			return err
 		}
@@ -54,13 +58,19 @@ var mcpInitCmd = &cobra.Command{
 	Aliases: []string{"setup", "install"},
 	Short:   "Initialize or merge Octo MCP server into project configuration",
 	Long: `The init command safely writes or merges the Octo MCP server entry into
-.mcp.json (and .cursor/mcp.json if a .cursor directory exists) without overwriting
-existing MCP servers.`,
+.mcp.json (and .cursor/mcp.json if a .cursor directory exists or --cursor is specified)
+without overwriting existing MCP servers.`,
 	Args:         cobra.MaximumNArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dirFlag, _ := cmd.Flags().GetString("dir")
+		cursorFlag, _ := cmd.Flags().GetBool("cursor")
+		absPathFlag, _ := cmd.Flags().GetBool("abs-path")
+
 		targetDir := "."
-		if len(args) > 0 {
+		if dirFlag != "" {
+			targetDir = dirFlag
+		} else if len(args) > 0 {
 			targetDir = args[0]
 		}
 
@@ -72,8 +82,12 @@ existing MCP servers.`,
 			return fmt.Errorf("target path %q is not a directory", targetDir)
 		}
 
-		exe := resolveOctoExecutable()
-		configuredFiles, err := initMCPConfigs(targetDir, exe)
+		cmdName := "octo"
+		if absPathFlag {
+			cmdName = resolveOctoExecutable()
+		}
+
+		configuredFiles, err := initMCPConfigs(targetDir, cmdName, cursorFlag)
 		if err != nil {
 			return err
 		}
@@ -92,6 +106,13 @@ existing MCP servers.`,
 
 func init() {
 	mcpCmd.GroupID = "main"
+
+	mcpConfigCmd.Flags().Bool("abs-path", false, "Use absolute path to the octo executable instead of 'octo'")
+
+	mcpInitCmd.Flags().String("dir", "", "Target directory to initialize MCP configuration (defaults to current directory)")
+	mcpInitCmd.Flags().Bool("cursor", false, "Also create or merge .cursor/mcp.json even if .cursor directory does not exist")
+	mcpInitCmd.Flags().Bool("abs-path", false, "Use absolute path to the octo executable instead of 'octo'")
+
 	mcpCmd.AddCommand(mcpConfigCmd)
 	mcpCmd.AddCommand(mcpInitCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -116,13 +137,22 @@ func resolveOctoExecutable() string {
 	return "octo"
 }
 
+type mcpServerConfig struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+}
+
+type mcpConfigLayout struct {
+	MCPServers map[string]mcpServerConfig `json:"mcpServers"`
+}
+
 // generateMCPConfig returns the formatted JSON string for an mcpServers configuration.
-func generateMCPConfig(exePath string) (string, error) {
-	config := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"octo": map[string]interface{}{
-				"command": exePath,
-				"args":    []string{"mcp"},
+func generateMCPConfig(cmdName string) (string, error) {
+	config := mcpConfigLayout{
+		MCPServers: map[string]mcpServerConfig{
+			"octo": {
+				Command: cmdName,
+				Args:    []string{"mcp"},
 			},
 		},
 	}
@@ -134,17 +164,17 @@ func generateMCPConfig(exePath string) (string, error) {
 }
 
 // initMCPConfigs creates or merges .mcp.json and .cursor/mcp.json in targetDir.
-func initMCPConfigs(targetDir, exePath string) ([]string, error) {
+func initMCPConfigs(targetDir, cmdName string, forceCursor bool) ([]string, error) {
 	var configured []string
 
 	// 1. Root .mcp.json
 	rootMcpPath := filepath.Join(targetDir, ".mcp.json")
-	if err := mergeMCPConfigFile(rootMcpPath, exePath); err != nil {
+	if err := mergeMCPConfigFile(rootMcpPath, cmdName); err != nil {
 		return nil, fmt.Errorf("failed to configure %s: %w", rootMcpPath, err)
 	}
 	configured = append(configured, rootMcpPath)
 
-	// 2. .cursor/mcp.json (if .cursor/ directory or file exists)
+	// 2. .cursor/mcp.json (if .cursor/ directory or file exists, or forceCursor is true)
 	cursorDir := filepath.Join(targetDir, ".cursor")
 	cursorMcpPath := filepath.Join(cursorDir, "mcp.json")
 	stat, err := os.Stat(cursorDir)
@@ -155,8 +185,8 @@ func initMCPConfigs(targetDir, exePath string) ([]string, error) {
 		}
 	}
 
-	if cursorExists {
-		if err := mergeMCPConfigFile(cursorMcpPath, exePath); err != nil {
+	if cursorExists || forceCursor {
+		if err := mergeMCPConfigFile(cursorMcpPath, cmdName); err != nil {
 			return nil, fmt.Errorf("failed to configure %s: %w", cursorMcpPath, err)
 		}
 		configured = append(configured, cursorMcpPath)
@@ -167,19 +197,19 @@ func initMCPConfigs(targetDir, exePath string) ([]string, error) {
 
 // mergeMCPConfigFile safely writes or merges the "octo" server entry into filePath
 // preserving all existing MCP servers and other JSON attributes.
-func mergeMCPConfigFile(filePath, exePath string) error {
-	var root map[string]interface{}
+func mergeMCPConfigFile(filePath, cmdName string) error {
+	var root map[string]any
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read %s: %w", filePath, err)
 		}
-		root = make(map[string]interface{})
+		root = make(map[string]any)
 	} else {
 		trimmed := bytes.TrimSpace(data)
 		if len(trimmed) == 0 {
-			root = make(map[string]interface{})
+			root = make(map[string]any)
 		} else {
 			if err := json.Unmarshal(trimmed, &root); err != nil {
 				return fmt.Errorf("failed to parse existing JSON in %s: %w (ensure file is valid JSON)", filePath, err)
@@ -188,23 +218,23 @@ func mergeMCPConfigFile(filePath, exePath string) error {
 	}
 
 	if root == nil {
-		root = make(map[string]interface{})
+		root = make(map[string]any)
 	}
 
-	var mcpServers map[string]interface{}
+	var mcpServers map[string]any
 	if rawServers, exists := root["mcpServers"]; exists {
-		if m, ok := rawServers.(map[string]interface{}); ok {
+		if m, ok := rawServers.(map[string]any); ok {
 			mcpServers = m
 		} else {
-			mcpServers = make(map[string]interface{})
+			mcpServers = make(map[string]any)
 		}
 	} else {
-		mcpServers = make(map[string]interface{})
+		mcpServers = make(map[string]any)
 	}
 
-	mcpServers["octo"] = map[string]interface{}{
-		"command": exePath,
-		"args":    []interface{}{"mcp"},
+	mcpServers["octo"] = map[string]any{
+		"command": cmdName,
+		"args":    []any{"mcp"},
 	}
 	root["mcpServers"] = mcpServers
 

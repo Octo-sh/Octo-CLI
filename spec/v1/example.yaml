@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/octo-sh/octo-cli/main/spec/v1/schema.json
 spec: octo.dev/v1
 project:
   name: example-app

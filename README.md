@@ -151,13 +151,28 @@ octo mcp init
 
 This automatically detects your environment and safely writes or merges the `octo` server configuration into:
 - `.mcp.json` (supported by Claude Code, Cursor, Antigravity, Cline)
-- `.cursor/mcp.json` (if a `.cursor/` directory exists)
+- `.cursor/mcp.json` (if a `.cursor/` directory exists or `--cursor` is passed)
 
 Existing MCP servers and custom configurations are preserved without overwriting.
 
-To print the copy-pasteable JSON block pointing to your resolved binary path:
+Useful options:
+```bash
+# Initialize in a target sub-directory or service
+octo mcp init --dir services/api
+
+# Always create or merge .cursor/mcp.json even if .cursor directory does not exist yet
+octo mcp init --cursor
+
+# Use absolute path to the octo binary (for GUI editors with minimal PATH)
+octo mcp init --abs-path
+```
+
+To print the clean, formatted JSON configuration block without modifying files:
 ```bash
 octo mcp config
+
+# Or with resolved absolute binary path:
+octo mcp config --abs-path
 ```
 
 ### Manual Configuration
@@ -222,10 +237,9 @@ claude mcp add octo -- octo mcp
 Any repository can use Octo as an automated, zero-configuration smoke gate in GitHub Actions using the official composite action:
 
 ```yaml
+# 2-line automated CI verification gate (defaults: command: verify, args: --json)
 - name: Octo CI Smoke Gate
   uses: octo-sh/octo-cli@v1
-  with:
-    command: verify
 ```
 
 ### Complete Workflow (`.github/workflows/smoke-gate.yml`)
