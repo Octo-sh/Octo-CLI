@@ -147,3 +147,26 @@ jobs:
               Write-Error "Error: Version mismatch! Expected '$($env:TAG)' (or '$cleanTag'), got: '$versionOutput'"
               exit 1
           }
+
+  action-test:
+    name: Action Release Install (${{ matrix.os }})
+    needs: resolve-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: ubuntu-latest
+          - os: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Dogfood Released Action on Sample Fixture
+        uses: ./
+        with:
+          version: ${{ needs.resolve-tag.outputs.tag }}
+          working-directory: test/fixtures/smoke-app
+          command: verify
+          args: --json
