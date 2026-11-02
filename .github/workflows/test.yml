@@ -46,3 +46,34 @@ jobs:
 
       - name: Run Tests with -race
         run: go test -race -count=1 ./...
+
+  action-test:
+    name: Action Dogfood (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test Composite Action on Sample Fixture
+        uses: ./
+        with:
+          version: 'local'
+          working-directory: test/fixtures/smoke-app
+          command: verify
+          args: --json
+
+      - name: Test Composite Action Default Command
+        uses: ./
+        with:
+          version: 'local'
+          working-directory: test/fixtures/smoke-app

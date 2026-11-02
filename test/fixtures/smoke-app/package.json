@@ -1,0 +1,11 @@
+{
+  "name": "smoke-fixture",
+  "version": "1.0.0",
+  "description": "Smoke fixture for Octo CI Action verification",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
+

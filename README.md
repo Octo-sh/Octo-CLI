@@ -198,9 +198,16 @@ claude mcp add octo -- octo mcp
 <a id="zero-config-ci-smoke-gate-github-actions"></a>
 ## Zero-Config CI Smoke Gate (GitHub Actions)
 
-Any open-source repository can use Octo-CLI as an automated, zero-configuration smoke gate in GitHub Actions. Octo evaluates repository integrity, validates execution plans, and tests live runtime health without maintaining fragile custom shell scripts.
+Any repository can use Octo as an automated, zero-configuration smoke gate in GitHub Actions using the official composite action:
 
-### Quick GitHub Actions Workflow (`.github/workflows/smoke-gate.yml`)
+```yaml
+- name: Octo CI Smoke Gate
+  uses: octo-sh/octo-cli@v1
+  with:
+    command: verify
+```
+
+### Complete Workflow (`.github/workflows/smoke-gate.yml`)
 
 ```yaml
 name: CI Smoke Gate
@@ -219,26 +226,23 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Octo CLI
-        run: curl -fsSL https://raw.githubusercontent.com/Octo-sh/Octo-CLI/main/install.sh | sh
-
-      - name: Inspect Stack & Validate Plan
-        run: |
-          octo inspect
-          octo plan
-
-      - name: Smoke Run & Verify Stack
-        run: |
-          octo run --detach
-          octo verify --json
+      - name: Octo CI Smoke Gate
+        uses: octo-sh/octo-cli@v1
+        with:
+          command: verify
+          args: --json
 ```
 
-For strict enforcement of verified `.octo.lock` candidate fingerprints in production or release workflows:
-```bash
-octo verify --strict
+The action automatically detects runner OS (Linux, macOS, Windows) and architecture (x86_64, ARM64), installs the prebuilt release binary, and executes verification. For strict lockfile enforcement:
+```yaml
+      - name: Enforce Verified Strategy Lockfile
+        uses: octo-sh/octo-cli@v1
+        with:
+          command: verify
+          args: --strict
 ```
 
-See **[docs/CI_GATE.md](docs/CI_GATE.md)** for advanced matrix configurations, container sandboxing, and PR status reporting.
+See **[docs/CI_GATE.md](docs/CI_GATE.md)** for action configuration options, monorepo multi-target setups, container sandboxing, and diagnostics.
 
 ---
 

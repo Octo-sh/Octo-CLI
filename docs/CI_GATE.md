@@ -2,6 +2,13 @@
 
 Octo-CLI enables open-source maintainers and engineering teams to turn any repository into a self-verifying, automated smoke gate in GitHub Actions—without maintaining fragile custom bash scripts or hardcoding environment dependencies.
 
+```yaml
+- name: Octo CI Smoke Gate
+  uses: octo-sh/octo-cli@v1
+  with:
+    command: verify
+```
+
 ---
 
 ## Why Use Octo in CI?
@@ -16,7 +23,7 @@ Octo-CLI enables open-source maintainers and engineering teams to turn any repos
 
 ## Quickstart Workflow
 
-Create `.github/workflows/smoke-gate.yml` in your repository:
+Add the official Octo composite GitHub Action to `.github/workflows/smoke-gate.yml` in your repository:
 
 ```yaml
 name: CI Smoke Gate
@@ -35,13 +42,33 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Octo Smoke Gate
+        uses: octo-sh/octo-cli@v1
+        with:
+          command: verify
+          args: --json
+```
+
+### Action Configuration Reference
+
+The `octo-sh/octo-cli` action works across Linux (`ubuntu-latest`), macOS (`macos-latest`), and Windows (`windows-latest`) runners:
+
+| Input | Description | Default | Example |
+| :--- | :--- | :--- | :--- |
+| `version` | Octo release tag to install (`latest`, or specific tag like `v1.2.2`, or `local`) | `latest` | `version: v1.2.2` |
+| `working-directory` | Directory to execute Octo commands within | `.` | `working-directory: services/api` |
+| `command` | Octo command to run (`verify`, `run`, `inspect`, `plan`) | `verify` | `command: verify` |
+| `args` | Additional arguments or flags passed directly to `octo` | `""` | `args: --strict --json` |
+
+---
+
+## Manual Script Setup (Alternative CI Systems)
+
+For non-GitHub CI environments (such as GitLab CI, Bitbucket Pipelines, or CircleCI) or manual shell steps, install via the standalone install script:
+
+```yaml
       - name: Install Octo CLI
         run: curl -fsSL https://raw.githubusercontent.com/Octo-sh/Octo-CLI/main/install.sh | sh
-
-      - name: Inspect Stack & Validate Plan
-        run: |
-          octo inspect
-          octo plan
 
       - name: Smoke Run & Verify Stack
         run: |
@@ -59,7 +86,10 @@ In production release pipelines or protected branch gates, enforce that all exec
 
 ```yaml
       - name: Enforce Verified Strategy Lockfile
-        run: octo verify --strict
+        uses: octo-sh/octo-cli@v1
+        with:
+          command: verify
+          args: --strict
 ```
 
 If `.octo.lock` is missing or code modifications invalidated existing candidates without re-verification, the gate fails immediately with a descriptive error.

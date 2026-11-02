@@ -1,0 +1,185 @@
+name: 'Octo CI Gate'
+description: 'Install Octo CLI and execute automated CI verification smoke gates'
+author: 'Octo-sh'
+
+inputs:
+  version:
+    description: 'Octo version tag to install (e.g. latest, v1.2.2, or local)'
+    required: false
+    default: 'latest'
+  working-directory:
+    description: 'Working directory to execute octo within'
+    required: false
+    default: '.'
+  command:
+    description: 'Octo command to run (e.g. verify, run, inspect, plan)'
+    required: false
+    default: 'verify'
+  args:
+    description: 'Additional flags or arguments to pass to the octo command'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Octo CI Gate
+      id: octo-gate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+
+        # 1. Detect Runner OS
+        OS_NAME="${RUNNER_OS:-}"
+        if [ -z "$OS_NAME" ]; then
+          case "$(uname -s)" in
+            Darwin*) OS_NAME="macOS" ;;
+            Linux*)  OS_NAME="Linux" ;;
+            CYGWIN*|MINGW*|MSYS*) OS_NAME="Windows" ;;
+            *)       OS_NAME="Linux" ;;
+          esac
+        fi
+
+        # 2. Detect Runner Architecture
+        ARCH_NAME="${RUNNER_ARCH:-}"
+        if [ -z "$ARCH_NAME" ]; then
+          case "$(uname -m)" in
+            x86_64|amd64)  ARCH_NAME="X64" ;;
+            arm64|aarch64) ARCH_NAME="ARM64" ;;
+            *)             ARCH_NAME="$(uname -m)" ;;
+          esac
+        fi
+
+        echo "==> Octo CI Gate: Runner OS=${OS_NAME}, Arch=${ARCH_NAME}"
+
+        VERSION="${{ inputs.version }}"
+        ACTION_DIR="${{ github.action_path }}"
+        INSTALLED=false
+
+        if [ "$OS_NAME" = "Windows" ]; then
+          # 3a. Windows Installation
+          if [ -n "${LOCALAPPDATA:-}" ]; then
+            WIN_BASE="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")"
+            WIN_INSTALL_DIR="${WIN_BASE}/Programs/octo"
+          else
+            WIN_INSTALL_DIR="${HOME}/AppData/Local/Programs/octo"
+          fi
+          mkdir -p "$WIN_INSTALL_DIR"
+
+          if command -v cygpath >/dev/null 2>&1; then
+            echo "$(cygpath -w "$WIN_INSTALL_DIR")" >> "$GITHUB_PATH"
+          else
+            echo "$WIN_INSTALL_DIR" >> "$GITHUB_PATH"
+          fi
+          export PATH="${WIN_INSTALL_DIR}:$PATH"
+
+          if [ "$VERSION" != "local" ]; then
+            echo "==> Downloading Octo CLI release ($VERSION) for Windows..."
+            if command -v cygpath >/dev/null 2>&1; then
+              export OCTO_INSTALL_DIR="$(cygpath -w "$WIN_INSTALL_DIR")"
+            else
+              export OCTO_INSTALL_DIR="$WIN_INSTALL_DIR"
+            fi
+            export OCTO_VERSION="$VERSION"
+
+            PWSH_BIN="powershell"
+            if command -v pwsh >/dev/null 2>&1; then
+              PWSH_BIN="pwsh"
+            fi
+
+            WIN_SCRIPT="${ACTION_DIR}/install.ps1"
+            if command -v cygpath >/dev/null 2>&1; then
+              WIN_SCRIPT="$(cygpath -w "${ACTION_DIR}/install.ps1")"
+            fi
+
+            if [ -f "${ACTION_DIR}/install.ps1" ]; then
+              if "$PWSH_BIN" -ExecutionPolicy Bypass -File "$WIN_SCRIPT"; then
+                INSTALLED=true
+              fi
+            else
+              if "$PWSH_BIN" -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Octo-sh/Octo-CLI/main/install.ps1 | iex"; then
+                INSTALLED=true
+              fi
+            fi
+          fi
+
+          if [ "$INSTALLED" != "true" ]; then
+            echo "==> Release download not available or failed; checking local Go build fallback..."
+            OCTO_SRC=""
+            if [ -d "${ACTION_DIR}/cmd/octo" ]; then
+              OCTO_SRC="${ACTION_DIR}/cmd/octo"
+            elif [ -d "./cmd/octo" ]; then
+              OCTO_SRC="./cmd/octo"
+            fi
+
+            if [ -n "$OCTO_SRC" ] && command -v go >/dev/null 2>&1; then
+              echo "==> Compiling octo from local source ($OCTO_SRC)..."
+              go build -ldflags="-s -w -X main.version=local" -o "${WIN_INSTALL_DIR}/octo.exe" "$OCTO_SRC"
+              INSTALLED=true
+            else
+              echo "::error::Could not download release binary and local go build fallback was unavailable."
+              exit 1
+            fi
+          fi
+
+        else
+          # 3b. Linux & macOS Installation
+          INSTALL_DIR="${HOME}/.local/bin"
+          mkdir -p "$INSTALL_DIR"
+          echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="${INSTALL_DIR}:/usr/local/bin:$PATH"
+
+          if [ "$VERSION" != "local" ]; then
+            echo "==> Downloading Octo CLI release ($VERSION) for ${OS_NAME}/${ARCH_NAME}..."
+            export OCTO_VERSION="$VERSION"
+            export OCTO_INSTALL_DIR="$INSTALL_DIR"
+
+            if [ -f "${ACTION_DIR}/install.sh" ]; then
+              if sh "${ACTION_DIR}/install.sh"; then
+                INSTALLED=true
+              fi
+            else
+              if curl -fsSL https://raw.githubusercontent.com/Octo-sh/Octo-CLI/main/install.sh | sh; then
+                INSTALLED=true
+              fi
+            fi
+          fi
+
+          if [ "$INSTALLED" != "true" ]; then
+            echo "==> Release download not available or failed; checking local Go build fallback..."
+            OCTO_SRC=""
+            if [ -d "${ACTION_DIR}/cmd/octo" ]; then
+              OCTO_SRC="${ACTION_DIR}/cmd/octo"
+            elif [ -d "./cmd/octo" ]; then
+              OCTO_SRC="./cmd/octo"
+            fi
+
+            if [ -n "$OCTO_SRC" ] && command -v go >/dev/null 2>&1; then
+              echo "==> Compiling octo from local source ($OCTO_SRC)..."
+              go build -ldflags="-s -w -X main.version=local" -o "${INSTALL_DIR}/octo" "$OCTO_SRC"
+              chmod +x "${INSTALL_DIR}/octo"
+              INSTALLED=true
+            else
+              echo "::error::Could not download release binary and local go build fallback was unavailable."
+              exit 1
+            fi
+          fi
+        fi
+
+        hash -r 2>/dev/null || true
+        echo "==> Installed Octo binary:"
+        octo --version
+
+        echo "==> Running: octo ${{ inputs.command }} ${{ inputs.args }}"
+        if [ -n "${{ inputs.args }}" ]; then
+          octo ${{ inputs.command }} ${{ inputs.args }}
+        else
+          octo ${{ inputs.command }}
+        fi
+
+branding:
+  icon: 'check-circle'
+  color: 'blue'
+
