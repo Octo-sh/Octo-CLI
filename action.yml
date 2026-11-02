@@ -1,4 +1,4 @@
-name: 'Octo CI Gate'
+name: 'Octo CLI — Deterministic Repo Intelligence & Verification'
 description: 'Install Octo CLI and execute automated CI verification smoke gates'
 author: 'Octo-sh'
 
@@ -18,7 +18,7 @@ inputs:
   args:
     description: 'Additional flags or arguments to pass to the octo command'
     required: false
-    default: ''
+    default: '--json'
 
 runs:
   using: 'composite'
@@ -58,7 +58,7 @@ runs:
         INSTALLED=false
 
         if [ "$OS_NAME" = "Windows" ]; then
-          # 3a. Windows Installation
+          # 3a. Windows Environment & Path Setup
           if [ -n "${LOCALAPPDATA:-}" ]; then
             WIN_BASE="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")"
             WIN_INSTALL_DIR="${WIN_BASE}/Programs/octo"
@@ -74,8 +74,22 @@ runs:
           fi
           export PATH="${WIN_INSTALL_DIR}:$PATH"
 
-          if [ "$VERSION" != "local" ]; then
-            echo "==> Downloading Octo CLI release ($VERSION) for Windows..."
+          # If octo is already on PATH and default latest version is requested, reuse it
+          if command -v octo >/dev/null 2>&1 && [ "$VERSION" = "latest" ]; then
+            echo "==> octo is already available on PATH: $(command -v octo)"
+            INSTALLED=true
+          fi
+
+          # If go.mod exists in action checkout path and Go is available, compile from source (supports @main)
+          if [ "$INSTALLED" != "true" ] && [ -f "${ACTION_DIR}/go.mod" ] && command -v go >/dev/null 2>&1 && ([ "$VERSION" = "local" ] || [ "$VERSION" = "latest" ]); then
+            echo "==> Compiling octo from action checkout path (${ACTION_DIR})..."
+            go build -ldflags="-s -w -X main.version=local" -o "${WIN_INSTALL_DIR}/octo.exe" "${ACTION_DIR}/cmd/octo"
+            INSTALLED=true
+          fi
+
+          # Otherwise install release binary via install.ps1
+          if [ "$INSTALLED" != "true" ] && [ "$VERSION" != "local" ]; then
+            echo "==> Installing Octo CLI release ($VERSION) for Windows..."
             if command -v cygpath >/dev/null 2>&1; then
               export OCTO_INSTALL_DIR="$(cygpath -w "$WIN_INSTALL_DIR")"
             else
@@ -104,35 +118,51 @@ runs:
             fi
           fi
 
-          if [ "$INSTALLED" != "true" ]; then
-            echo "==> Release download not available or failed; checking local Go build fallback..."
+          # Fallback: if release download failed, try local Go build if Go is available
+          if [ "$INSTALLED" != "true" ] && command -v go >/dev/null 2>&1; then
+            echo "==> Release download failed or unavailable; attempting Go build fallback..."
             OCTO_SRC=""
             if [ -d "${ACTION_DIR}/cmd/octo" ]; then
               OCTO_SRC="${ACTION_DIR}/cmd/octo"
             elif [ -d "./cmd/octo" ]; then
               OCTO_SRC="./cmd/octo"
             fi
-
-            if [ -n "$OCTO_SRC" ] && command -v go >/dev/null 2>&1; then
-              echo "==> Compiling octo from local source ($OCTO_SRC)..."
+            if [ -n "$OCTO_SRC" ]; then
               go build -ldflags="-s -w -X main.version=local" -o "${WIN_INSTALL_DIR}/octo.exe" "$OCTO_SRC"
               INSTALLED=true
-            else
-              echo "::error::Could not download release binary and local go build fallback was unavailable."
-              exit 1
             fi
           fi
 
+          if [ "$INSTALLED" != "true" ] && ! command -v octo >/dev/null 2>&1; then
+            echo "::error::Could not install Octo binary and local go build fallback was unavailable."
+            exit 1
+          fi
+
         else
-          # 3b. Linux & macOS Installation
+          # 3b. Linux & macOS Environment & Path Setup
           INSTALL_DIR="${HOME}/.local/bin"
           mkdir -p "$INSTALL_DIR"
           echo "$INSTALL_DIR" >> "$GITHUB_PATH"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
           export PATH="${INSTALL_DIR}:/usr/local/bin:$PATH"
 
-          if [ "$VERSION" != "local" ]; then
-            echo "==> Downloading Octo CLI release ($VERSION) for ${OS_NAME}/${ARCH_NAME}..."
+          # If octo is already on PATH and default latest version is requested, reuse it
+          if command -v octo >/dev/null 2>&1 && [ "$VERSION" = "latest" ]; then
+            echo "==> octo is already available on PATH: $(command -v octo)"
+            INSTALLED=true
+          fi
+
+          # If go.mod exists in action checkout path and Go is available, compile from source (supports @main)
+          if [ "$INSTALLED" != "true" ] && [ -f "${ACTION_DIR}/go.mod" ] && command -v go >/dev/null 2>&1 && ([ "$VERSION" = "local" ] || [ "$VERSION" = "latest" ]); then
+            echo "==> Compiling octo from action checkout path (${ACTION_DIR})..."
+            go build -ldflags="-s -w -X main.version=local" -o "${INSTALL_DIR}/octo" "${ACTION_DIR}/cmd/octo"
+            chmod +x "${INSTALL_DIR}/octo"
+            INSTALLED=true
+          fi
+
+          # Otherwise install release binary via install.sh
+          if [ "$INSTALLED" != "true" ] && [ "$VERSION" != "local" ]; then
+            echo "==> Installing Octo CLI release ($VERSION) for ${OS_NAME}/${ARCH_NAME}..."
             export OCTO_VERSION="$VERSION"
             export OCTO_INSTALL_DIR="$INSTALL_DIR"
 
@@ -147,24 +177,25 @@ runs:
             fi
           fi
 
-          if [ "$INSTALLED" != "true" ]; then
-            echo "==> Release download not available or failed; checking local Go build fallback..."
+          # Fallback: if release download failed, try local Go build if Go is available
+          if [ "$INSTALLED" != "true" ] && command -v go >/dev/null 2>&1; then
+            echo "==> Release download failed or unavailable; attempting Go build fallback..."
             OCTO_SRC=""
             if [ -d "${ACTION_DIR}/cmd/octo" ]; then
               OCTO_SRC="${ACTION_DIR}/cmd/octo"
             elif [ -d "./cmd/octo" ]; then
               OCTO_SRC="./cmd/octo"
             fi
-
-            if [ -n "$OCTO_SRC" ] && command -v go >/dev/null 2>&1; then
-              echo "==> Compiling octo from local source ($OCTO_SRC)..."
+            if [ -n "$OCTO_SRC" ]; then
               go build -ldflags="-s -w -X main.version=local" -o "${INSTALL_DIR}/octo" "$OCTO_SRC"
               chmod +x "${INSTALL_DIR}/octo"
               INSTALLED=true
-            else
-              echo "::error::Could not download release binary and local go build fallback was unavailable."
-              exit 1
             fi
+          fi
+
+          if [ "$INSTALLED" != "true" ] && ! command -v octo >/dev/null 2>&1; then
+            echo "::error::Could not install Octo binary and local go build fallback was unavailable."
+            exit 1
           fi
         fi
 
